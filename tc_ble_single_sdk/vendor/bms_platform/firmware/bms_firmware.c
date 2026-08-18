@@ -2,6 +2,13 @@
 #include "app_config.h"
 
 #define BMS_FIRMWARE_MAX_PARAMETER_WRITES (21u)
+#define BMS_FIRMWARE_PENDING_NONE           (0u)
+#define BMS_FIRMWARE_PENDING_PARAMETERS     (1u)
+#define BMS_FIRMWARE_PENDING_BLE_NAME       (2u)
+
+static const uint8_t g_bms_firmware_default_ble_name[] = BMS_BLE_DEFAULT_NAME;
+typedef char BmsFirmwareDefaultBleNameFits[(sizeof(g_bms_firmware_default_ble_name) - 1u <=
+                                             BMS_BLE_NAME_MAX_BYTES) ? 1 : -1];
 
 typedef struct {
     BmsLinkDecoder decoder;
@@ -11,9 +18,29 @@ typedef struct {
     void *transmit_context;
     BmsFirmwareWriteAuthorizer write_authorizer;
     void *write_authorizer_context;
+    uint8_t ble_name[BMS_BLE_NAME_MAX_BYTES];
+    uint8_t ble_name_length;
+    BmsFirmwareBleNameSetter ble_name_setter;
+    void *ble_name_setter_context;
+    const BmsConfigStore *config_store;
+    uint32_t config_generation;
+    uint8_t config_store_enabled;
+    BmsLinkFrame pending_request;
+    BmsParameters pending_previous_parameters;
+    uint8_t pending_name[BMS_BLE_NAME_MAX_BYTES];
+    uint8_t pending_name_length;
+    uint8_t pending_parameter_write_count;
+    uint8_t pending_save_kind;
 } BmsFirmwareContext;
 
 static BmsFirmwareContext g_bms_firmware;
+static BmsParameterWrite g_bms_firmware_parameter_writes[BMS_FIRMWARE_MAX_PARAMETER_WRITES];
+static BmsPersistentConfig g_bms_firmware_persistent_configuration;
+
+static uint8_t bms_firmware_has_pending_save(void)
+{
+    return (g_bms_firmware.pending_save_kind != BMS_FIRMWARE_PENDING_NONE) ? 1u : 0u;
+}
 
 static uint16_t bms_firmware_read_u16(const uint8_t *data)
 {
@@ -80,6 +107,30 @@ static uint8_t bms_firmware_write_is_authorized(void)
             (g_bms_firmware.write_authorizer(g_bms_firmware.write_authorizer_context) != 0u)) ? 1u : 0u;
 }
 
+static void bms_firmware_copy_ble_name(uint8_t *destination, const uint8_t *source,
+                                       uint8_t length)
+{
+    uint8_t index;
+    for (index = 0u; index < length; ++index) {
+        destination[index] = source[index];
+    }
+}
+
+static BmsStatus bms_firmware_save_configuration(const BmsParameters *parameters,
+                                                  const uint8_t *ble_name,
+                                                  uint8_t ble_name_length)
+{
+    if (g_bms_firmware.config_store_enabled == 0u) {
+        return BMS_STATUS_NOT_READY;
+    }
+    g_bms_firmware_persistent_configuration.parameters = *parameters;
+    g_bms_firmware_persistent_configuration.ble_name_length = ble_name_length;
+    bms_firmware_copy_ble_name(g_bms_firmware_persistent_configuration.ble_name,
+                               ble_name, ble_name_length);
+    return bms_config_store_save(g_bms_firmware.config_store, &g_bms_firmware_persistent_configuration,
+                                 &g_bms_firmware.config_generation);
+}
+
 static BmsStatus bms_firmware_write_device_info(const BmsLinkFrame *request)
 {
     BmsLinkFrame response;
@@ -96,6 +147,55 @@ static BmsStatus bms_firmware_write_device_info(const BmsLinkFrame *request)
     response.payload[7] = (uint8_t)product->power_topology;
     bms_firmware_write_u32(&response.payload[8], 0u);
     return bms_firmware_send(&response);
+}
+
+static BmsStatus bms_firmware_write_ble_name(const BmsLinkFrame *request)
+{
+    BmsLinkFrame response;
+
+    if (request->payload_length != 0u) {
+        return bms_firmware_send_error(request, BMS_STATUS_INVALID_ARGUMENT);
+    }
+    bms_firmware_prepare_response(request, &response);
+    response.payload[0] = g_bms_firmware.ble_name_length;
+    for (uint8_t index = 0u; index < g_bms_firmware.ble_name_length; ++index) {
+        response.payload[index + 1u] = g_bms_firmware.ble_name[index];
+    }
+    response.payload_length = (uint16_t)(g_bms_firmware.ble_name_length + 1u);
+    return bms_firmware_send(&response);
+}
+
+static BmsStatus bms_firmware_set_ble_name(const BmsLinkFrame *request)
+{
+    uint8_t index;
+
+    if ((request->payload_length == 0u) || (request->payload_length > BMS_BLE_NAME_MAX_BYTES)) {
+        return bms_firmware_send_error(request, BMS_STATUS_INVALID_ARGUMENT);
+    }
+    if (bms_firmware_write_is_authorized() == 0u) {
+        return bms_firmware_send_error(request, BMS_STATUS_NOT_SUPPORTED);
+    }
+    if (g_bms_firmware.ble_name_setter == 0) {
+        return bms_firmware_send_error(request, BMS_STATUS_NOT_SUPPORTED);
+    }
+    if (g_bms_firmware.config_store_enabled == 0u) {
+        return bms_firmware_send_error(request, BMS_STATUS_NOT_READY);
+    }
+    if (bms_firmware_has_pending_save() != 0u) {
+        return bms_firmware_send_error(request, BMS_STATUS_NOT_READY);
+    }
+    for (index = 0u; index < request->payload_length; ++index) {
+        if ((request->payload[index] < 0x20u) || (request->payload[index] == 0x7fu)) {
+            return bms_firmware_send_error(request, BMS_STATUS_INVALID_ARGUMENT);
+        }
+    }
+    for (index = 0u; index < request->payload_length; ++index) {
+        g_bms_firmware.pending_name[index] = request->payload[index];
+    }
+    g_bms_firmware.pending_name_length = (uint8_t)request->payload_length;
+    g_bms_firmware.pending_request = *request;
+    g_bms_firmware.pending_save_kind = BMS_FIRMWARE_PENDING_BLE_NAME;
+    return BMS_STATUS_OK;
 }
 
 static BmsStatus bms_firmware_write_realtime(const BmsLinkFrame *request)
@@ -198,12 +298,17 @@ static BmsStatus bms_firmware_write_schema(const BmsLinkFrame *request)
     bms_firmware_prepare_response(request, &response);
     for (index = 0u; (index < total) && (count < requested_count); ++index) {
         const BmsParameterDescriptor *descriptor = &descriptors[index];
+        uint8_t flags;
         if (descriptor->id < start_id) {
             continue;
         }
+        flags = descriptor->flags;
+        if (g_bms_firmware.config_store_enabled == 0u) {
+            flags = BMS_PARAMETER_FLAG_READ;
+        }
         bms_firmware_write_u16(&response.payload[offset], descriptor->id); offset += 2u;
         response.payload[offset++] = descriptor->type;
-        response.payload[offset++] = descriptor->flags;
+        response.payload[offset++] = flags;
         bms_firmware_write_u32(&response.payload[offset], (uint32_t)descriptor->minimum); offset += 4u;
         bms_firmware_write_u32(&response.payload[offset], (uint32_t)descriptor->maximum); offset += 4u;
         bms_firmware_write_u32(&response.payload[offset], (uint32_t)descriptor->default_value); offset += 4u;
@@ -216,8 +321,6 @@ static BmsStatus bms_firmware_write_schema(const BmsLinkFrame *request)
 
 static BmsStatus bms_firmware_set_parameters(const BmsLinkFrame *request)
 {
-    BmsParameterWrite writes[BMS_FIRMWARE_MAX_PARAMETER_WRITES];
-    BmsLinkFrame response;
     uint8_t count;
     uint8_t index;
     uint16_t offset = 0u;
@@ -229,20 +332,30 @@ static BmsStatus bms_firmware_set_parameters(const BmsLinkFrame *request)
     if (bms_firmware_write_is_authorized() == 0u) {
         return bms_firmware_send_error(request, BMS_STATUS_NOT_SUPPORTED);
     }
+    if (g_bms_firmware.config_store_enabled == 0u) {
+        return bms_firmware_send_error(request, BMS_STATUS_NOT_READY);
+    }
+    if (bms_firmware_has_pending_save() != 0u) {
+        return bms_firmware_send_error(request, BMS_STATUS_NOT_READY);
+    }
     count = (uint8_t)(request->payload_length / 6u);
     for (index = 0u; index < count; ++index) {
-        writes[index].id = bms_firmware_read_u16(&request->payload[offset]); offset += 2u;
-        writes[index].value = (int32_t)bms_firmware_read_u32(&request->payload[offset]); offset += 4u;
+        g_bms_firmware_parameter_writes[index].id =
+            bms_firmware_read_u16(&request->payload[offset]); offset += 2u;
+        g_bms_firmware_parameter_writes[index].value =
+            (int32_t)bms_firmware_read_u32(&request->payload[offset]); offset += 4u;
     }
-    status = bms_application_set_parameters(&g_bms_firmware.application, writes, count,
-                                            g_bms_firmware.realtime.timestamp_ms);
+    g_bms_firmware.pending_previous_parameters = g_bms_firmware.application.parameters;
+    status = bms_application_set_parameters(&g_bms_firmware.application,
+                                             g_bms_firmware_parameter_writes, count,
+                                             g_bms_firmware.realtime.timestamp_ms);
     if (status != BMS_STATUS_OK) {
         return bms_firmware_send_error(request, status);
     }
-    bms_firmware_prepare_response(request, &response);
-    response.payload_length = 1u;
-    response.payload[0] = count;
-    return bms_firmware_send(&response);
+    g_bms_firmware.pending_request = *request;
+    g_bms_firmware.pending_parameter_write_count = count;
+    g_bms_firmware.pending_save_kind = BMS_FIRMWARE_PENDING_PARAMETERS;
+    return BMS_STATUS_OK;
 }
 
 static BmsStatus bms_firmware_write_faults(const BmsLinkFrame *request)
@@ -335,6 +448,8 @@ static BmsStatus bms_firmware_handle_frame(const BmsLinkFrame *request)
     case BMSLINK_COMMAND_GET_PARAMETERS: return bms_firmware_write_parameters(request);
     case BMSLINK_COMMAND_SET_PARAMETERS: return bms_firmware_set_parameters(request);
     case BMSLINK_COMMAND_GET_PARAMETER_SCHEMA: return bms_firmware_write_schema(request);
+    case BMSLINK_COMMAND_GET_BLE_NAME: return bms_firmware_write_ble_name(request);
+    case BMSLINK_COMMAND_SET_BLE_NAME: return bms_firmware_set_ble_name(request);
     case BMSLINK_COMMAND_CONTROL: return bms_firmware_control(request);
     case BMSLINK_COMMAND_GET_FAULTS: return bms_firmware_write_faults(request);
     case BMSLINK_COMMAND_GET_EVENT_LOG: return bms_firmware_write_event_log(request);
@@ -346,10 +461,21 @@ static BmsStatus bms_firmware_handle_frame(const BmsLinkFrame *request)
 void bms_firmware_init(BmsFirmwareTransmit transmit, void *context)
 {
     const BmsProductConfig *product = bms_product_default_config();
+    uint8_t index;
     g_bms_firmware.transmit = transmit;
     g_bms_firmware.transmit_context = context;
     g_bms_firmware.write_authorizer = 0;
     g_bms_firmware.write_authorizer_context = 0;
+    g_bms_firmware.ble_name_setter = 0;
+    g_bms_firmware.ble_name_setter_context = 0;
+    g_bms_firmware.config_store = 0;
+    g_bms_firmware.config_store_enabled = 0u;
+    g_bms_firmware.config_generation = 0u;
+    g_bms_firmware.pending_save_kind = BMS_FIRMWARE_PENDING_NONE;
+    g_bms_firmware.ble_name_length = sizeof(g_bms_firmware_default_ble_name) - 1u;
+    for (index = 0u; index < g_bms_firmware.ble_name_length; ++index) {
+        g_bms_firmware.ble_name[index] = g_bms_firmware_default_ble_name[index];
+    }
     bmslink_decoder_init(&g_bms_firmware.decoder);
     bms_application_init(&g_bms_firmware.application, product);
     bms_realtime_init(&g_bms_firmware.realtime, product);
@@ -361,6 +487,104 @@ void bms_firmware_set_write_authorizer(BmsFirmwareWriteAuthorizer authorizer, vo
 {
     g_bms_firmware.write_authorizer = authorizer;
     g_bms_firmware.write_authorizer_context = context;
+}
+
+void bms_firmware_set_ble_name_setter(BmsFirmwareBleNameSetter setter, void *context)
+{
+    g_bms_firmware.ble_name_setter = setter;
+    g_bms_firmware.ble_name_setter_context = context;
+}
+
+BmsStatus bms_firmware_set_config_store(const BmsConfigStore *store)
+{
+    BmsStatus status;
+
+    if (store == 0) {
+        g_bms_firmware.config_store_enabled = 0u;
+        return BMS_STATUS_INVALID_ARGUMENT;
+    }
+    g_bms_firmware.config_store = store;
+    status = bms_config_store_load(g_bms_firmware.config_store,
+                                   &g_bms_firmware_persistent_configuration,
+                                   &g_bms_firmware.config_generation);
+    if (status == BMS_STATUS_NOT_READY) {
+        g_bms_firmware.config_store_enabled = 1u;
+        g_bms_firmware.config_generation = 0u;
+        return BMS_STATUS_OK;
+    }
+    if (status != BMS_STATUS_OK) {
+        g_bms_firmware.config_store_enabled = 0u;
+        return status;
+    }
+    if (g_bms_firmware.ble_name_setter == 0) {
+        g_bms_firmware.config_store_enabled = 0u;
+        return BMS_STATUS_NOT_READY;
+    }
+    status = g_bms_firmware.ble_name_setter(g_bms_firmware.ble_name_setter_context,
+                                             g_bms_firmware_persistent_configuration.ble_name,
+                                             g_bms_firmware_persistent_configuration.ble_name_length);
+    if (status != BMS_STATUS_OK) {
+        g_bms_firmware.config_store_enabled = 0u;
+        return status;
+    }
+    g_bms_firmware.application.parameters = g_bms_firmware_persistent_configuration.parameters;
+    bms_soc_init(&g_bms_firmware.application.soc, &g_bms_firmware.application.parameters);
+    g_bms_firmware.realtime.soc_permil = g_bms_firmware.application.soc.soc_permil;
+    g_bms_firmware.realtime.soh_permil = g_bms_firmware.application.soc.soh_permil;
+    bms_firmware_copy_ble_name(g_bms_firmware.ble_name,
+                               g_bms_firmware_persistent_configuration.ble_name,
+                               g_bms_firmware_persistent_configuration.ble_name_length);
+    g_bms_firmware.ble_name_length = g_bms_firmware_persistent_configuration.ble_name_length;
+    g_bms_firmware.config_store_enabled = 1u;
+    return BMS_STATUS_OK;
+}
+
+void bms_firmware_process(void)
+{
+    BmsLinkFrame response;
+    BmsStatus status;
+    uint8_t index;
+
+    if (bms_firmware_has_pending_save() == 0u) {
+        return;
+    }
+    if (g_bms_firmware.pending_save_kind == BMS_FIRMWARE_PENDING_PARAMETERS) {
+        status = bms_firmware_save_configuration(&g_bms_firmware.application.parameters,
+                                                  g_bms_firmware.ble_name,
+                                                  g_bms_firmware.ble_name_length);
+        if (status != BMS_STATUS_OK) {
+            g_bms_firmware.application.parameters = g_bms_firmware.pending_previous_parameters;
+            (void)bms_firmware_send_error(&g_bms_firmware.pending_request, status);
+        } else {
+            bms_firmware_prepare_response(&g_bms_firmware.pending_request, &response);
+            response.payload_length = 1u;
+            response.payload[0] = g_bms_firmware.pending_parameter_write_count;
+            (void)bms_firmware_send(&response);
+        }
+    } else {
+        status = bms_firmware_save_configuration(&g_bms_firmware.application.parameters,
+                                                  g_bms_firmware.pending_name,
+                                                  g_bms_firmware.pending_name_length);
+        if (status == BMS_STATUS_OK) {
+            status = g_bms_firmware.ble_name_setter(g_bms_firmware.ble_name_setter_context,
+                                                     g_bms_firmware.pending_name,
+                                                     g_bms_firmware.pending_name_length);
+        }
+        if (status != BMS_STATUS_OK) {
+            (void)bms_firmware_send_error(&g_bms_firmware.pending_request, status);
+        } else {
+            bms_firmware_copy_ble_name(g_bms_firmware.ble_name, g_bms_firmware.pending_name,
+                                       g_bms_firmware.pending_name_length);
+            g_bms_firmware.ble_name_length = g_bms_firmware.pending_name_length;
+            bms_firmware_prepare_response(&g_bms_firmware.pending_request, &response);
+            (void)bms_firmware_send(&response);
+        }
+    }
+    g_bms_firmware.pending_save_kind = BMS_FIRMWARE_PENDING_NONE;
+    for (index = 0u; index < g_bms_firmware.pending_name_length; ++index) {
+        g_bms_firmware.pending_name[index] = 0u;
+    }
+    g_bms_firmware.pending_name_length = 0u;
 }
 
 BmsStatus bms_firmware_receive(const uint8_t *data, uint16_t length)

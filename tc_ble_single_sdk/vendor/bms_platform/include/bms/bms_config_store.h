@@ -3,7 +3,10 @@
 
 #include "bms/bms_parameters.h"
 
-#define BMS_CONFIG_SLOT_SIZE       (80u)
+#define BMS_CONFIG_PARAMETERS_SIZE    (48u)
+#define BMS_CONFIG_BLE_NAME_MAX_BYTES (26u)
+#define BMS_CONFIG_PAYLOAD_SIZE       (80u)
+#define BMS_CONFIG_SLOT_SIZE          (96u)
 #define BMS_CONFIG_REQUIRED_SLOTS  (2u)
 
 typedef BmsStatus (*BmsStorageRead)(void *context, uint32_t address,
@@ -22,12 +25,18 @@ typedef struct {
     uint16_t slot_size;
 } BmsConfigStore;
 
-/* The board layer supplies Flash callbacks and two non-overlapping slots. */
+typedef struct {
+    BmsParameters parameters;
+    uint8_t ble_name_length;
+    uint8_t ble_name[BMS_CONFIG_BLE_NAME_MAX_BYTES];
+} BmsPersistentConfig;
+
+/* The board layer supplies a static-lifetime descriptor and two non-overlapping slots. */
 BmsStatus bms_config_store_load(const BmsConfigStore *store,
-                                BmsParameters *parameters,
+                                BmsPersistentConfig *configuration,
                                 uint32_t *generation);
 BmsStatus bms_config_store_save(const BmsConfigStore *store,
-                                const BmsParameters *parameters,
+                                const BmsPersistentConfig *configuration,
                                 uint32_t *generation);
 
 #endif /* BMS_CONFIG_STORE_H */

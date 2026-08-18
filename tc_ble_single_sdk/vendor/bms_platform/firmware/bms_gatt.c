@@ -44,7 +44,8 @@ static const u8 g_bms_tx_uuid[16] = {
 };
 static const u8 g_ota_service_uuid[16] = WRAPPING_BRACES(TELINK_OTA_UUID_SERVICE);
 static const u8 g_ota_value_uuid[16] = WRAPPING_BRACES(TELINK_SPP_DATA_OTA);
-static u8 g_device_name[] = "Telink BMS";
+static u8 g_device_name[BMS_BLE_NAME_MAX_BYTES] = BMS_BLE_DEFAULT_NAME;
+static u8 g_device_name_length = sizeof(BMS_BLE_DEFAULT_NAME) - 1u;
 static u8 g_rx_value[1];
 static u8 g_tx_value[1];
 static u8 g_tx_ccc[2];
@@ -101,13 +102,13 @@ static int bms_gatt_ota_receive(void *parameter)
 #endif
 }
 
-static const attribute_t g_attributes[] = {
+static attribute_t g_attributes[] = {
     {BMS_GATT_END - 1u, 0u, 0u, 0u, 0, 0, 0, 0},
     {3u, ATT_PERMISSIONS_READ, 2u, 2u, (u8 *)&g_primary_service_uuid,
      (u8 *)&g_gap_service_uuid, 0, 0},
     {0u, ATT_PERMISSIONS_READ, 2u, sizeof(g_name_declaration),
      (u8 *)&g_characteristic_uuid, (u8 *)g_name_declaration, 0, 0},
-    {0u, ATT_PERMISSIONS_READ, 2u, sizeof(g_device_name) - 1u,
+    {0u, ATT_PERMISSIONS_READ, 2u, sizeof(BMS_BLE_DEFAULT_NAME) - 1u,
      (u8 *)&g_device_name_uuid, g_device_name, 0, 0},
     {6u, ATT_PERMISSIONS_READ, 2u, 16u, (u8 *)&g_primary_service_uuid,
      (u8 *)g_bms_service_uuid, 0, 0},
@@ -136,7 +137,25 @@ void bms_gatt_init(void)
     g_tx_length = 0u;
     g_tx_offset = 0u;
     bls_att_setAttributeTable((u8 *)g_attributes);
-    bls_att_setDeviceName(g_device_name, sizeof(g_device_name) - 1u);
+    bls_att_setDeviceName(g_device_name, g_device_name_length);
+}
+
+BmsStatus bms_gatt_set_device_name(const uint8_t *name, uint8_t length)
+{
+    uint8_t index;
+
+    if ((name == 0) || (length == 0u) || (length > BMS_BLE_NAME_MAX_BYTES)) {
+        return BMS_STATUS_INVALID_ARGUMENT;
+    }
+    for (index = 0u; index < length; ++index) {
+        g_device_name[index] = name[index];
+    }
+    g_device_name_length = length;
+    g_attributes[BMS_GATT_GAP_NAME_VALUE].attrLen = length;
+    if (bls_att_setDeviceName(g_device_name, g_device_name_length) != BLE_SUCCESS) {
+        return BMS_STATUS_IO_ERROR;
+    }
+    return BMS_STATUS_OK;
 }
 
 BmsStatus bms_gatt_transmit(void *context, const uint8_t *data, uint16_t length)

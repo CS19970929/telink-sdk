@@ -4,6 +4,10 @@
 /* This is a compile profile, not a board pin assignment. */
 #define BMS_BOARD_PROFILE_COMPILE_ONLY       1
 
+/* The complete local name shares the 31-byte legacy advertising packet. */
+#define BMS_BLE_DEFAULT_NAME                  "Telink BMS"
+#define BMS_BLE_NAME_MAX_BYTES                26u
+
 /* The proof OTA target changes only PATCH to make a reboot observable. */
 #ifndef BMS_FIRMWARE_VERSION_MAJOR
 #define BMS_FIRMWARE_VERSION_MAJOR            0u
@@ -30,6 +34,13 @@
 
 #if (BMS_LAB_OTA_ENABLE && !BMS_LAB_SIMULATOR_ENABLE)
 #error "The OTA laboratory image must also enable the laboratory simulator"
+#endif
+
+/* Only the official 512 KiB laboratory board receives reviewed config slots. */
+#if (BMS_LAB_SIMULATOR_ENABLE)
+#define BMS_LAB_CONFIG_FLASH_ENABLE          1
+#else
+#define BMS_LAB_CONFIG_FLASH_ENABLE          0
 #endif
 
 #define BLE_APP_PM_ENABLE                    0

@@ -15,6 +15,10 @@
 #define BMS_ADV_INTERVAL_MAX             ADV_INTERVAL_105MS
 #define BMS_ADV_CHANNEL                  (BLT_ENABLE_ADV_37 | BLT_ENABLE_ADV_38 | BLT_ENABLE_ADV_39)
 #define BMS_PC2_TOGGLE_INTERVAL_US       (1000000u)
+#define BMS_ADV_DATA_MAX_LENGTH           (31u)
+#define BMS_LAB_CONFIG_SLOT0_ADDRESS      (0x72000u)
+#define BMS_LAB_CONFIG_SLOT1_ADDRESS      (0x73000u)
+#define BMS_FLASH_SECTOR_SIZE              (0x1000u)
 
 _attribute_data_retention_ u8 blt_rxfifo_b[BMS_RX_FIFO_SIZE * BMS_RX_FIFO_NUM];
 _attribute_data_retention_ my_fifo_t blt_rxfifo = {
@@ -29,13 +33,102 @@ static own_addr_type_t g_own_address_type = OWN_ADDRESS_PUBLIC;
 static uint8_t g_bms_write_session_authorized;
 static u32 g_pc2_toggle_tick;
 static u8 g_pc2_level;
-static const u8 g_advertising_data[] = {
-    0x0bu, 0x09u, 'T', 'e', 'l', 'i', 'n', 'k', ' ', 'B', 'M', 'S',
-    0x02u, 0x01u, 0x06u
-};
+static u8 g_advertising_data[BMS_ADV_DATA_MAX_LENGTH];
+static u8 g_advertising_data_length;
+/* Put the stable service identifier in scan response; the local name stays configurable. */
 static const u8 g_scan_response[] = {
-    0x08u, 0x09u, 'B', 'M', 'S', 'L', 'i', 'n', 'k'
+    0x11u, 0x07u,
+    0x57u, 0x94u, 0x68u, 0x20u, 0x8eu, 0x5eu, 0x44u, 0x91u,
+    0x92u, 0x46u, 0x0du, 0xa0u, 0x01u, 0x00u, 0xa5u, 0xb1u
 };
+
+#if (BMS_LAB_CONFIG_FLASH_ENABLE)
+static BmsStatus bms_app_config_flash_read(void *context, uint32_t address,
+                                           uint8_t *data, uint16_t length)
+{
+    (void)context;
+    if ((data == 0) || ((address != BMS_LAB_CONFIG_SLOT0_ADDRESS) &&
+                        (address != BMS_LAB_CONFIG_SLOT1_ADDRESS)) ||
+        (length > BMS_CONFIG_SLOT_SIZE)) {
+        return BMS_STATUS_INVALID_ARGUMENT;
+    }
+    flash_read_page(address, length, data);
+    return BMS_STATUS_OK;
+}
+
+static BmsStatus bms_app_config_flash_erase(void *context, uint32_t address, uint16_t length)
+{
+    (void)context;
+    if (((address != BMS_LAB_CONFIG_SLOT0_ADDRESS) &&
+         (address != BMS_LAB_CONFIG_SLOT1_ADDRESS)) || (length != BMS_FLASH_SECTOR_SIZE)) {
+        return BMS_STATUS_INVALID_ARGUMENT;
+    }
+    flash_erase_sector(address);
+    return BMS_STATUS_OK;
+}
+
+static BmsStatus bms_app_config_flash_write(void *context, uint32_t address,
+                                            const uint8_t *data, uint16_t length)
+{
+    (void)context;
+    if ((data == 0) || ((address != BMS_LAB_CONFIG_SLOT0_ADDRESS) &&
+                        (address != BMS_LAB_CONFIG_SLOT1_ADDRESS)) ||
+        (length > BMS_CONFIG_SLOT_SIZE)) {
+        return BMS_STATUS_INVALID_ARGUMENT;
+    }
+    flash_write_page(address, length, (uint8_t *)data);
+    return BMS_STATUS_OK;
+}
+
+static const BmsConfigStore g_bms_lab_config_store = {
+    bms_app_config_flash_read,
+    bms_app_config_flash_erase,
+    bms_app_config_flash_write,
+    0,
+    {BMS_LAB_CONFIG_SLOT0_ADDRESS, BMS_LAB_CONFIG_SLOT1_ADDRESS},
+    BMS_FLASH_SECTOR_SIZE
+};
+
+static BmsStatus bms_app_init_persistent_config(void)
+{
+    if (blc_flash_capacity != FLASH_SIZE_512K) {
+        return BMS_STATUS_NOT_SUPPORTED;
+    }
+    return bms_firmware_set_config_store(&g_bms_lab_config_store);
+}
+#endif
+
+static BmsStatus bms_app_set_advertising_name(const uint8_t *name, uint8_t length)
+{
+    uint8_t index;
+
+    if ((name == 0) || (length == 0u) || (length > BMS_BLE_NAME_MAX_BYTES)) {
+        return BMS_STATUS_INVALID_ARGUMENT;
+    }
+    g_advertising_data[0] = (uint8_t)(length + 1u);
+    g_advertising_data[1] = 0x09u;
+    for (index = 0u; index < length; ++index) {
+        g_advertising_data[index + 2u] = name[index];
+    }
+    g_advertising_data[length + 2u] = 0x02u;
+    g_advertising_data[length + 3u] = 0x01u;
+    g_advertising_data[length + 4u] = 0x06u;
+    g_advertising_data_length = (uint8_t)(length + 5u);
+    return (bls_ll_setAdvData(g_advertising_data, g_advertising_data_length) == BLE_SUCCESS) ?
+           BMS_STATUS_OK : BMS_STATUS_IO_ERROR;
+}
+
+static BmsStatus bms_app_set_ble_name(void *context, const uint8_t *name, uint8_t length)
+{
+    BmsStatus status;
+
+    (void)context;
+    status = bms_gatt_set_device_name(name, length);
+    if (status != BMS_STATUS_OK) {
+        return status;
+    }
+    return bms_app_set_advertising_name(name, length);
+}
 
 static void bms_app_init_pc2_heartbeat(void)
 {
@@ -144,11 +237,16 @@ void user_init_normal(void)
 
     bms_firmware_init(bms_gatt_transmit, 0);
     bms_firmware_set_write_authorizer(bms_app_write_is_authorized, 0);
+    bms_firmware_set_ble_name_setter(bms_app_set_ble_name, 0);
     bms_app_init_pc2_heartbeat();
 #if (BMS_LAB_SIMULATOR_ENABLE)
     bms_lab_simulator_init();
 #endif
-    bls_ll_setAdvData((u8 *)g_advertising_data, sizeof(g_advertising_data));
+    (void)bms_app_set_advertising_name((const uint8_t *)BMS_BLE_DEFAULT_NAME,
+                                       sizeof(BMS_BLE_DEFAULT_NAME) - 1u);
+#if (BMS_LAB_CONFIG_FLASH_ENABLE)
+    (void)bms_app_init_persistent_config();
+#endif
     bls_ll_setScanRspData((u8 *)g_scan_response, sizeof(g_scan_response));
     advertising_status = bls_ll_setAdvParam(BMS_ADV_INTERVAL_MIN, BMS_ADV_INTERVAL_MAX,
                                              ADV_TYPE_CONNECTABLE_UNDIRECTED,
@@ -175,5 +273,6 @@ void main_loop(void)
     bms_lab_simulator_process(clock_time() / CLOCK_SYS_CLOCK_1MS);
 #endif
     bms_gatt_process();
+    bms_firmware_process();
     bms_app_process_pc2_heartbeat();
 }

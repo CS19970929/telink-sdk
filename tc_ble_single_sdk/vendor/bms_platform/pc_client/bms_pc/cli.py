@@ -15,8 +15,9 @@ async def main_async() -> None:
     parser.add_argument("--demo", action="store_true", help="使用离线演示设备")
     parser.add_argument("--address", help="目标 BLE 地址")
     parser.add_argument("--image", type=Path, help="SDK 构建且检查过的 Telink .bin 镜像（仅 ota 命令）")
+    parser.add_argument("--name", help="要设置的蓝牙名称（仅 name 命令；省略则读取）")
     parser.add_argument("--confirm-ota", action="store_true", help="确认执行不可逆的设备 Flash 写入")
-    parser.add_argument("command", choices=("scan", "info", "realtime", "params", "faults", "ota-info", "ota"))
+    parser.add_argument("command", choices=("scan", "info", "realtime", "params", "name", "faults", "ota-info", "ota"))
     args = parser.parse_args()
     if args.command == "scan":
         for address, name in await BleakTransport.scan():
@@ -29,6 +30,12 @@ async def main_async() -> None:
         if args.command == "info": print(await client.device_info())
         elif args.command == "realtime": print(await client.realtime())
         elif args.command == "params": print(*await client.all_parameters(), sep="\n")
+        elif args.command == "name":
+            if args.name is None:
+                print(await client.ble_name())
+            else:
+                await client.set_ble_name(args.name)
+                print("蓝牙名称已更新并写入配置 Flash；重启后仍会保留")
         elif args.command == "faults": print(await client.faults())
         elif args.command == "ota-info": print(await client.ota_info())
         else:

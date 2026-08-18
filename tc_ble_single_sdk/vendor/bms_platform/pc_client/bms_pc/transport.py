@@ -126,6 +126,7 @@ class DemoTransport(BmsTransport):
         self._decoder = Decoder()
         self._connected = False
         self.parameters = {0x0101: 4250, 0x0102: 4150, 0x0201: 20000, 0x0202: 500}
+        self.ble_name = "Telink BMS"
 
     async def connect(self, address: str | None = None) -> None:
         self._connected = True
@@ -170,6 +171,12 @@ class DemoTransport(BmsTransport):
             for parameter_id, value in self.parameters.items():
                 payload += struct.pack("<HBBiii", parameter_id, 0, 7, 0, 300000, value)
             return Frame(request.sequence, command, bytes(payload), FLAG_RESPONSE)
+        if command is Command.GET_BLE_NAME:
+            encoded = self.ble_name.encode("utf-8")
+            return Frame(request.sequence, command, bytes([len(encoded)]) + encoded, FLAG_RESPONSE)
+        if command is Command.SET_BLE_NAME:
+            self.ble_name = request.payload.decode("utf-8")
+            return Frame(request.sequence, command, b"", FLAG_RESPONSE)
         if command is Command.GET_FAULTS:
             return Frame(request.sequence, command, bytes(12), FLAG_RESPONSE)
         if command is Command.GET_EVENT_LOG:

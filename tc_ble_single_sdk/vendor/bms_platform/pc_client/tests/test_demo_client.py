@@ -21,6 +21,8 @@ class DemoClientTests(unittest.TestCase):
             parameters = await client.all_parameters()
             await client.set_parameters({0x0101: 4200})
             updated = await client.all_parameters()
+            self.assertEqual(await client.ble_name(), "Telink BMS")
+            await client.set_ble_name("BMS 测试")
             faults = await client.faults()
             ota = await client.ota_info()
             self.assertEqual(info.cell_count, 20)
@@ -28,6 +30,9 @@ class DemoClientTests(unittest.TestCase):
             self.assertGreater(realtime.pack_voltage_mv, 65535)
             self.assertEqual(len(parameters), 4)
             self.assertIn(4200, [item.value for item in updated])
+            self.assertEqual(await client.ble_name(), "BMS 测试")
+            with self.assertRaises(ValueError):
+                await client.set_ble_name("x" * 27)
             self.assertEqual(faults, (0, 0, 0))
             self.assertFalse(ota[0])
             await client.disconnect()

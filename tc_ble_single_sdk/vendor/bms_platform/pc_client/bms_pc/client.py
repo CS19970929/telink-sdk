@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import struct
+import asyncio
 from pathlib import Path
 from typing import Callable
 
@@ -78,6 +79,7 @@ class BmsClient:
         self.transport = transport
         self._sequence = 1
         self._decoder = Decoder()
+        self._request_lock = asyncio.Lock()
 
     async def connect(self, address: str | None = None) -> None:
         await self.transport.connect(address)
@@ -86,21 +88,22 @@ class BmsClient:
         await self.transport.disconnect()
 
     async def request(self, command: Command, payload: bytes = b"") -> Frame:
-        sequence = self._sequence
-        self._sequence = 1 if sequence == 0xFFFF else sequence + 1
-        packet = Frame(sequence=sequence, command=command, payload=payload).encode()
-        fragments = await self.transport.exchange(packet)
-        for fragment in fragments:
-            for frame in self._decoder.feed(fragment):
-                if frame.sequence != sequence or frame.command != command:
-                    continue
-                if not frame.flags & FLAG_RESPONSE:
-                    raise BmsProtocolError("设备返回的不是响应帧")
-                if frame.flags & FLAG_ERROR:
-                    error = frame.payload[0] if frame.payload else -1
-                    raise BmsProtocolError(f"设备拒绝命令 0x{command:02X}，错误码 {error}")
-                return frame
-        raise BmsProtocolError("未收到完整 BMSLink 响应")
+        async with self._request_lock:
+            sequence = self._sequence
+            self._sequence = 1 if sequence == 0xFFFF else sequence + 1
+            packet = Frame(sequence=sequence, command=command, payload=payload).encode()
+            fragments = await self.transport.exchange(packet)
+            for fragment in fragments:
+                for frame in self._decoder.feed(fragment):
+                    if frame.sequence != sequence or frame.command != command:
+                        continue
+                    if not frame.flags & FLAG_RESPONSE:
+                        raise BmsProtocolError("设备返回的不是响应帧")
+                    if frame.flags & FLAG_ERROR:
+                        error = frame.payload[0] if frame.payload else -1
+                        raise BmsProtocolError(f"设备拒绝命令 0x{command:02X}，错误码 {error}")
+                    return frame
+            raise BmsProtocolError("未收到完整 BMSLink 响应")
 
     async def device_info(self) -> DeviceInfo:
         payload = (await self.request(Command.GET_DEVICE_INFO)).payload
@@ -165,6 +168,21 @@ class BmsClient:
             if len(page) < 7:
                 return result
             start_id = page[-1].parameter_id + 1
+
+    async def ble_name(self) -> str:
+        payload = (await self.request(Command.GET_BLE_NAME)).payload
+        if not payload or len(payload) != payload[0] + 1:
+            raise BmsProtocolError("蓝牙名称响应长度错误")
+        try:
+            return payload[1:].decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise BmsProtocolError("设备返回的蓝牙名称不是 UTF-8") from error
+
+    async def set_ble_name(self, name: str) -> None:
+        encoded = name.encode("utf-8")
+        if not 1 <= len(encoded) <= 26 or any(ord(character) < 0x20 or ord(character) == 0x7F for character in name):
+            raise ValueError("蓝牙名称必须为 1–26 字节的 UTF-8 文本，且不能包含控制字符")
+        await self.request(Command.SET_BLE_NAME, encoded)
 
     async def set_parameters(self, values: dict[int, int]) -> None:
         if not values or len(values) > 21:

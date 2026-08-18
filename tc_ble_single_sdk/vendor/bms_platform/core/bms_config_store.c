@@ -1,10 +1,13 @@
 #include "bms/bms_config_store.h"
 
 #define BMS_CONFIG_MAGIC        (0x31434642u) /* "BFC1" little endian */
-#define BMS_CONFIG_VERSION      (1u)
+#define BMS_CONFIG_VERSION      (2u)
 #define BMS_CONFIG_HEADER_SIZE  (12u)
-#define BMS_CONFIG_PAYLOAD_SIZE (64u)
 #define BMS_CONFIG_CRC_OFFSET   (BMS_CONFIG_HEADER_SIZE + BMS_CONFIG_PAYLOAD_SIZE)
+
+/* BLE callback stack is intentionally small on TLSR825x; storage calls are serialized. */
+static uint8_t g_bms_config_image[BMS_CONFIG_SLOT_SIZE];
+static BmsPersistentConfig g_bms_config_candidate;
 
 static void bms_config_write_u16(uint8_t *data, uint16_t value)
 {
@@ -70,7 +73,7 @@ static void bms_config_encode_parameters(const BmsParameters *parameters, uint8_
     BMS_CONFIG_PUT_U32(parameters->balance_max_current_ma);
     BMS_CONFIG_PUT_U16(parameters->heating_start_decic);
     BMS_CONFIG_PUT_U16(parameters->heating_stop_decic);
-    while (offset < BMS_CONFIG_PAYLOAD_SIZE) {
+    while (offset < BMS_CONFIG_PARAMETERS_SIZE) {
         data[offset++] = 0u;
     }
 #undef BMS_CONFIG_PUT_U16
@@ -107,10 +110,68 @@ static void bms_config_decode_parameters(const uint8_t *data, BmsParameters *par
 #undef BMS_CONFIG_GET_U32
 }
 
-static BmsStatus bms_config_decode_image(const uint8_t *image, BmsParameters *parameters,
+static BmsStatus bms_config_validate_ble_name(const uint8_t *name, uint8_t length)
+{
+    uint8_t index;
+    if ((name == 0) || (length == 0u) || (length > BMS_CONFIG_BLE_NAME_MAX_BYTES)) {
+        return BMS_STATUS_INVALID_ARGUMENT;
+    }
+    for (index = 0u; index < length; ++index) {
+        if ((name[index] < 0x20u) || (name[index] == 0x7fu)) {
+            return BMS_STATUS_INVALID_ARGUMENT;
+        }
+    }
+    return BMS_STATUS_OK;
+}
+
+static BmsStatus bms_config_encode_payload(const BmsPersistentConfig *configuration, uint8_t *data)
+{
+    uint16_t index;
+    BmsStatus status;
+    if (configuration == 0) {
+        return BMS_STATUS_INVALID_ARGUMENT;
+    }
+    status = bms_config_validate_ble_name(configuration->ble_name, configuration->ble_name_length);
+    if (status != BMS_STATUS_OK) {
+        return status;
+    }
+    bms_config_encode_parameters(&configuration->parameters, data);
+    data[BMS_CONFIG_PARAMETERS_SIZE] = configuration->ble_name_length;
+    for (index = 0u; index < configuration->ble_name_length; ++index) {
+        data[BMS_CONFIG_PARAMETERS_SIZE + 1u + index] = configuration->ble_name[index];
+    }
+    for (index = (uint16_t)(BMS_CONFIG_PARAMETERS_SIZE + 1u + configuration->ble_name_length);
+         index < BMS_CONFIG_PAYLOAD_SIZE; ++index) {
+        data[index] = 0u;
+    }
+    return BMS_STATUS_OK;
+}
+
+static BmsStatus bms_config_decode_payload(const uint8_t *data, BmsPersistentConfig *configuration)
+{
+    uint8_t length;
+    uint8_t index;
+    BmsStatus status;
+    if ((data == 0) || (configuration == 0)) {
+        return BMS_STATUS_INVALID_ARGUMENT;
+    }
+    bms_config_decode_parameters(data, &configuration->parameters);
+    length = data[BMS_CONFIG_PARAMETERS_SIZE];
+    status = bms_config_validate_ble_name(&data[BMS_CONFIG_PARAMETERS_SIZE + 1u], length);
+    if (status != BMS_STATUS_OK) {
+        return status;
+    }
+    configuration->ble_name_length = length;
+    for (index = 0u; index < length; ++index) {
+        configuration->ble_name[index] = data[BMS_CONFIG_PARAMETERS_SIZE + 1u + index];
+    }
+    return BMS_STATUS_OK;
+}
+
+static BmsStatus bms_config_decode_image(const uint8_t *image, BmsPersistentConfig *configuration,
                                          uint32_t *generation)
 {
-    BmsParameters candidate;
+    BmsPersistentConfig candidate;
     if ((bms_config_read_u32(&image[0]) != BMS_CONFIG_MAGIC) ||
         (bms_config_read_u16(&image[4]) != BMS_CONFIG_VERSION) ||
         (bms_config_read_u16(&image[6]) != BMS_CONFIG_PAYLOAD_SIZE) ||
@@ -118,11 +179,11 @@ static BmsStatus bms_config_decode_image(const uint8_t *image, BmsParameters *pa
          bms_config_crc32(image, BMS_CONFIG_CRC_OFFSET))) {
         return BMS_STATUS_CRC_ERROR;
     }
-    bms_config_decode_parameters(&image[BMS_CONFIG_HEADER_SIZE], &candidate);
-    if (bms_parameters_validate(&candidate) != BMS_STATUS_OK) {
+    if ((bms_config_decode_payload(&image[BMS_CONFIG_HEADER_SIZE], &candidate) != BMS_STATUS_OK) ||
+        (bms_parameters_validate(&candidate.parameters) != BMS_STATUS_OK)) {
         return BMS_STATUS_PROTOCOL_ERROR;
     }
-    *parameters = candidate;
+    *configuration = candidate;
     *generation = bms_config_read_u32(&image[8]);
     return BMS_STATUS_OK;
 }
@@ -137,17 +198,15 @@ static BmsStatus bms_config_validate_store(const BmsConfigStore *store)
     return BMS_STATUS_OK;
 }
 
-BmsStatus bms_config_store_load(const BmsConfigStore *store, BmsParameters *parameters,
+BmsStatus bms_config_store_load(const BmsConfigStore *store, BmsPersistentConfig *configuration,
                                 uint32_t *generation)
 {
-    uint8_t image[BMS_CONFIG_SLOT_SIZE];
-    BmsParameters candidate;
     uint32_t selected_generation = 0u;
     uint32_t candidate_generation;
     uint8_t selected = 0u;
     uint8_t slot;
     BmsStatus status;
-    if ((parameters == 0) || (generation == 0)) {
+    if ((configuration == 0) || (generation == 0)) {
         return BMS_STATUS_INVALID_ARGUMENT;
     }
     status = bms_config_validate_store(store);
@@ -156,11 +215,13 @@ BmsStatus bms_config_store_load(const BmsConfigStore *store, BmsParameters *para
     }
     *generation = 0u;
     for (slot = 0u; slot < BMS_CONFIG_REQUIRED_SLOTS; ++slot) {
-        status = store->read(store->context, store->slot_addresses[slot], image, sizeof(image));
+        status = store->read(store->context, store->slot_addresses[slot], g_bms_config_image,
+                             sizeof(g_bms_config_image));
         if ((status == BMS_STATUS_OK) &&
-            (bms_config_decode_image(image, &candidate, &candidate_generation) == BMS_STATUS_OK)) {
+            (bms_config_decode_image(g_bms_config_image, &g_bms_config_candidate,
+                                     &candidate_generation) == BMS_STATUS_OK)) {
             if ((selected == 0u) || ((int32_t)(candidate_generation - selected_generation) > 0)) {
-                *parameters = candidate;
+                *configuration = g_bms_config_candidate;
                 selected_generation = candidate_generation;
                 selected = 1u;
             }
@@ -170,16 +231,15 @@ BmsStatus bms_config_store_load(const BmsConfigStore *store, BmsParameters *para
     return (selected != 0u) ? BMS_STATUS_OK : BMS_STATUS_NOT_READY;
 }
 
-BmsStatus bms_config_store_save(const BmsConfigStore *store, const BmsParameters *parameters,
+BmsStatus bms_config_store_save(const BmsConfigStore *store, const BmsPersistentConfig *configuration,
                                 uint32_t *generation)
 {
-    uint8_t image[BMS_CONFIG_SLOT_SIZE];
-    uint8_t verify[BMS_CONFIG_SLOT_SIZE];
     uint8_t slot;
     uint32_t next_generation;
+    uint32_t candidate_generation;
     BmsStatus status;
-    if ((parameters == 0) || (generation == 0) ||
-        (bms_parameters_validate(parameters) != BMS_STATUS_OK)) {
+    if ((configuration == 0) || (generation == 0) ||
+        (bms_parameters_validate(&configuration->parameters) != BMS_STATUS_OK)) {
         return BMS_STATUS_INVALID_ARGUMENT;
     }
     status = bms_config_validate_store(store);
@@ -188,25 +248,31 @@ BmsStatus bms_config_store_save(const BmsConfigStore *store, const BmsParameters
     }
     slot = (uint8_t)((*generation + 1u) & 1u);
     next_generation = *generation + 1u;
-    bms_config_write_u32(&image[0], BMS_CONFIG_MAGIC);
-    bms_config_write_u16(&image[4], BMS_CONFIG_VERSION);
-    bms_config_write_u16(&image[6], BMS_CONFIG_PAYLOAD_SIZE);
-    bms_config_write_u32(&image[8], next_generation);
-    bms_config_encode_parameters(parameters, &image[BMS_CONFIG_HEADER_SIZE]);
-    bms_config_write_u32(&image[BMS_CONFIG_CRC_OFFSET],
-                         bms_config_crc32(image, BMS_CONFIG_CRC_OFFSET));
+    bms_config_write_u32(&g_bms_config_image[0], BMS_CONFIG_MAGIC);
+    bms_config_write_u16(&g_bms_config_image[4], BMS_CONFIG_VERSION);
+    bms_config_write_u16(&g_bms_config_image[6], BMS_CONFIG_PAYLOAD_SIZE);
+    bms_config_write_u32(&g_bms_config_image[8], next_generation);
+    status = bms_config_encode_payload(configuration, &g_bms_config_image[BMS_CONFIG_HEADER_SIZE]);
+    if (status != BMS_STATUS_OK) {
+        return status;
+    }
+    bms_config_write_u32(&g_bms_config_image[BMS_CONFIG_CRC_OFFSET],
+                         bms_config_crc32(g_bms_config_image, BMS_CONFIG_CRC_OFFSET));
     status = store->erase(store->context, store->slot_addresses[slot], store->slot_size);
     if (status != BMS_STATUS_OK) {
         return status;
     }
-    status = store->write(store->context, store->slot_addresses[slot], image, sizeof(image));
+    status = store->write(store->context, store->slot_addresses[slot], g_bms_config_image,
+                          sizeof(g_bms_config_image));
     if (status != BMS_STATUS_OK) {
         return status;
     }
-    status = store->read(store->context, store->slot_addresses[slot], verify, sizeof(verify));
+    status = store->read(store->context, store->slot_addresses[slot], g_bms_config_image,
+                         sizeof(g_bms_config_image));
     if ((status != BMS_STATUS_OK) ||
-        (bms_config_crc32(verify, BMS_CONFIG_CRC_OFFSET) !=
-         bms_config_read_u32(&verify[BMS_CONFIG_CRC_OFFSET]))) {
+        (bms_config_decode_image(g_bms_config_image, &g_bms_config_candidate,
+                                 &candidate_generation) != BMS_STATUS_OK) ||
+        (candidate_generation != next_generation)) {
         return BMS_STATUS_IO_ERROR;
     }
     *generation = next_generation;

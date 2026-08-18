@@ -21,6 +21,8 @@ class Command(IntEnum):
     GET_PARAMETERS = 0x10
     SET_PARAMETERS = 0x11
     GET_PARAMETER_SCHEMA = 0x12
+    GET_BLE_NAME = 0x13
+    SET_BLE_NAME = 0x14
     CONTROL = 0x20
     GET_FAULTS = 0x30
     GET_EVENT_LOG = 0x31

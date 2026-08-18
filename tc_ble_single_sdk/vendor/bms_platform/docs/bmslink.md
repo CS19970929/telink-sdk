@@ -30,6 +30,7 @@ BMSLink 是 BMS 的业务帧协议，与 BLE GATT、UART、RS485、CAN 的报文
 | `0x02` | GET_REALTIME | BmsRealtime 快照 |
 | `0x10` / `0x11` | GET/SET_PARAMETERS | 统一参数读写 |
 | `0x12` | GET_PARAMETER_SCHEMA | 参数目录、类型、范围和访问属性 |
+| `0x13` / `0x14` | GET/SET_BLE_NAME | 查询/修改 GAP 与广播蓝牙名称 |
 | `0x20` | CONTROL | 受权限和安全状态约束的控制命令 |
 | `0x30` / `0x31` | GET_FAULTS / GET_EVENT_LOG | 故障及事件诊断 |
 | `0x40` | OTA_INFO | 返回官方 OTA 服务与镜像兼容性信息 |
@@ -43,6 +44,8 @@ BMSLink 是 BMS 的业务帧协议，与 BLE GATT、UART、RS485、CAN 的报文
 `GET_REALTIME` 固定前缀为 `ValidFlags:u32, TimestampMs:u32, PackVoltageMv:u32, CurrentMa:i32, PowerMw:i32, SocPermil:u16, SohPermil:u16, CellCount:u8, TemperatureCount:u8`，随后是单体 `u16[]`、温度 `i16[]`、`BalanceMask:u32, Alarm:u32, Protection:u32, Fault:u32, State:u8`。总压必须为 `u32`（20S 满充电压可以超过 65.535V）。单体最小/最大/压差保留在固件模型中，客户端由单体数组计算，以便最大的 32S/8 温度快照仍不超过 BMSLink 的 128 字节上限。
 
 `CONTROL` 当前只定义子命令 `0x01`（`SET_SOC_PERMIL`，载荷为 `0x01 + Soc:u16`）；不定义远程直接开关 MOS 的通用命令。参数写入和控制必须经过已授权的安全会话。`GET_EVENT_LOG` 请求为空或 `Start:u8, Count:u8`，每条事件为 `TimestampMs:u32, Type:u8, Severity:u8, Before:u32, After:u32`。`OTA_INFO` 只说明官方 OTA 服务是否存在，实际镜像传输走 Telink OTA Service，不走 BMSLink。
+
+`GET_BLE_NAME` 请求为空，响应为 `Length:u8 + UTF-8 名称`。`SET_BLE_NAME` 的载荷直接为 1–26 字节 UTF-8 名称，拒绝空名称和控制字符，且同样要求已加密的授权会话。官方 512 KiB 开发板实验镜像成功后会先把名称与全部参数一起写入双槽 CRC 配置记录，再立即更新 GAP Device Name 和广播 Complete Local Name。扫描响应只携带固定的 BMS Service UUID，因而 Windows 扫描列表显示的是可配置名称，而非旧的固定 `BMSLink` 标签。没有经过对应板级 Flash 审核的生产配置则拒绝写入，而不是悄悄产生无法持久化的运行时修改。
 
 ## 固定测试向量
 
