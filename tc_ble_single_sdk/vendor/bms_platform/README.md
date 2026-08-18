@@ -8,7 +8,7 @@
 - AFE 边界：以采样、均衡、逻辑功率路径、硬件故障和低功耗能力抽象；
 - SH36735：仅实现 SPI/CRC/寄存器访问边界，尚未接入板级 SPI、RSENSE、NTC 曲线和 MOS 引脚；
 - 目标工具链：Telink TC32 GCC 4.5.1-tc32-1.3，不使用 ARM GCC；
-- BMSLink v1 编解码器已就绪；BLE、参数、保护和 OTA 将在后续独立提交中实现。
+- BMSLink v1、BLE/GATT、参数 Schema、基础保护/SOC/均衡/加热策略和官方 OTA 服务均已接入；实际硬件测量、标定和量产安全配置仍需板级验证。
 
 ## 构建与静态分析
 
@@ -28,6 +28,7 @@ build-core 只编译本平台的业务核心和 AFE 边界，作为快速 TC32 �
     core/        BMS 数据模型及应用协调器
     afe/         通用 AFE 接口与芯片实现
     include/     对内稳定头文件
+    schema/      PC/App 使用的版本化参数公开清单
     docs/        架构、构建和决策记录
     tools/       独立 TC32/Cppcheck 入口
 

@@ -1,0 +1,25 @@
+version: 1
+encoding: little-endian
+firmware_descriptor: core/bms_parameters.c
+parameters:
+  - { id: 0x0101, key: protect.cell.ov.trip_mv, type: unsigned, unit: mV }
+  - { id: 0x0102, key: protect.cell.ov.release_mv, type: unsigned, unit: mV }
+  - { id: 0x0103, key: protect.cell.uv.trip_mv, type: unsigned, unit: mV }
+  - { id: 0x0104, key: protect.cell.uv.release_mv, type: unsigned, unit: mV }
+  - { id: 0x0105, key: protect.delay_ms, type: unsigned, unit: ms }
+  - { id: 0x0110, key: protect.charge.oc.trip_ma, type: unsigned, unit: mA }
+  - { id: 0x0111, key: protect.discharge.oc.trip_ma, type: unsigned, unit: mA }
+  - { id: 0x0120, key: protect.charge.temp.low_decic, type: signed, unit: deciC }
+  - { id: 0x0121, key: protect.charge.temp.high_decic, type: signed, unit: deciC }
+  - { id: 0x0122, key: protect.discharge.temp.low_decic, type: signed, unit: deciC }
+  - { id: 0x0123, key: protect.discharge.temp.high_decic, type: signed, unit: deciC }
+  - { id: 0x0130, key: alarm.cell.delta_mv, type: unsigned, unit: mV }
+  - { id: 0x0201, key: soc.nominal_capacity_mah, type: unsigned, unit: mAh }
+  - { id: 0x0202, key: soc.initial_permil, type: unsigned, unit: permil }
+  - { id: 0x0301, key: balance.start_mv, type: unsigned, unit: mV }
+  - { id: 0x0302, key: balance.delta_mv, type: unsigned, unit: mV }
+  - { id: 0x0303, key: balance.min_temp_decic, type: signed, unit: deciC }
+  - { id: 0x0304, key: balance.max_temp_decic, type: signed, unit: deciC }
+  - { id: 0x0305, key: balance.max_current_ma, type: unsigned, unit: mA }
+  - { id: 0x0401, key: heating.start_decic, type: signed, unit: deciC }
+  - { id: 0x0402, key: heating.stop_decic, type: signed, unit: deciC }

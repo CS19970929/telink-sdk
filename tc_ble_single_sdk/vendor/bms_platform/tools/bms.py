@@ -30,8 +30,16 @@ EXPECTED_SOURCES = (
     Path("afe/sh36735/sh36735_adapter.c"),
     Path("afe/sh36735/sh36735_driver.c"),
     Path("board/bms_product.c"),
+    Path("core/bms_application.c"),
+    Path("core/bms_balance.c"),
+    Path("core/bms_config_store.c"),
+    Path("core/bms_event.c"),
+    Path("core/bms_heating.c"),
+    Path("core/bms_parameters.c"),
     Path("core/bms_platform.c"),
+    Path("core/bms_protection.c"),
     Path("core/bms_realtime.c"),
+    Path("core/bms_soc.c"),
     Path("protocol/bmslink.c"),
 )
 FIRMWARE_OWNED_SOURCES = (

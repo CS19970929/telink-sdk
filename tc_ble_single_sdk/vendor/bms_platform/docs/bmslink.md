@@ -36,6 +36,12 @@ BMSLink 是 BMS 的业务帧协议，与 BLE GATT、UART、RS485、CAN 的报文
 
 协议不携带 SH36735 寄存器地址、ADC 码值或位定义。特定 AFE 诊断只能作为受控的扩展诊断载荷，不能成为普通业务命令的语义。
 
+## 参数、控制和日志载荷
+
+`GET_PARAMETERS` 和 `GET_PARAMETER_SCHEMA` 的请求为空，或为 `StartId:u16, Count:u8`；响应首字节是实际条目数。参数项为 `Id:u16, Type:u8, Value:i32`；Schema 项为 `Id:u16, Type:u8, Flags:u8, Min:i32, Max:i32, Default:i32`。所有整数仍为小端。`SET_PARAMETERS` 的请求由连续 `Id:u16, Value:i32` 组成，固件原子校验并应用整批写入，成功响应为写入条数。
+
+`CONTROL` 当前只定义子命令 `0x01`（`SET_SOC_PERMIL`，载荷为 `0x01 + Soc:u16`）；不定义远程直接开关 MOS 的通用命令。参数写入和控制必须经过已授权的安全会话。`GET_EVENT_LOG` 请求为空或 `Start:u8, Count:u8`，每条事件为 `TimestampMs:u32, Type:u8, Severity:u8, Before:u32, After:u32`。`OTA_INFO` 只说明官方 OTA 服务是否存在，实际镜像传输走 Telink OTA Service，不走 BMSLink。
+
 ## 固定测试向量
 
 空载荷的 `GET_DEVICE_INFO` 请求，版本 1、Flags 0、Sequence `0x1234`：

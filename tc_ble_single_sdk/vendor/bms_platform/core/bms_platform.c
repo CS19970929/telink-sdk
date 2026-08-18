@@ -33,6 +33,7 @@ BmsStatus bms_platform_init(BmsPlatform *platform,
     platform->product = *product;
     platform->afe = *afe;
     bms_realtime_init(&platform->realtime, product);
+    bms_application_init(&platform->application, product);
     platform->afe_faults.common_flags = 0u;
     platform->afe_faults.vendor_status = 0u;
 
@@ -50,6 +51,7 @@ BmsStatus bms_platform_poll(BmsPlatform *platform, uint32_t timestamp_ms)
 {
     BmsMeasurement measurement;
     BmsStatus status;
+    uint32_t elapsed_ms;
 
     if (platform == 0) {
         return BMS_STATUS_INVALID_ARGUMENT;
@@ -68,6 +70,8 @@ BmsStatus bms_platform_poll(BmsPlatform *platform, uint32_t timestamp_ms)
         platform->state = BMS_PLATFORM_STATE_AFE_ERROR;
         return BMS_STATUS_PROTOCOL_ERROR;
     }
+    elapsed_ms = (platform->realtime.sample_sequence == 0u) ? 0u :
+                 (uint32_t)(timestamp_ms - platform->realtime.timestamp_ms);
     measurement.timestamp_ms = timestamp_ms;
 
     status = bms_realtime_publish_measurement(&platform->realtime, &measurement);
@@ -82,5 +86,38 @@ BmsStatus bms_platform_poll(BmsPlatform *platform, uint32_t timestamp_ms)
     }
 
     platform->realtime.fault_flags = platform->afe_faults.common_flags;
+    bms_application_step(&platform->application, &platform->realtime, elapsed_ms);
+    platform->realtime.heating_requested = platform->application.output.heating_requested;
+
+    status = afe_set_power(&platform->afe, &platform->application.output.desired_power);
+    if (status == BMS_STATUS_OK) {
+        platform->realtime.power_state.charge_enabled =
+            platform->application.output.desired_power.charge_enabled;
+        platform->realtime.power_state.discharge_enabled =
+            platform->application.output.desired_power.discharge_enabled;
+        platform->realtime.power_state.precharge_enabled =
+            platform->application.output.desired_power.precharge_enabled;
+    } else if ((status != BMS_STATUS_NOT_READY) && (status != BMS_STATUS_NOT_SUPPORTED)) {
+        bms_platform_record_afe_failure(platform, status);
+        return status;
+    }
+    status = afe_set_balance(&platform->afe, platform->application.output.desired_balance_mask);
+    if (status == BMS_STATUS_OK) {
+        platform->realtime.balance_cells_mask = platform->application.output.desired_balance_mask;
+    } else if ((status != BMS_STATUS_NOT_READY) && (status != BMS_STATUS_NOT_SUPPORTED)) {
+        bms_platform_record_afe_failure(platform, status);
+        return status;
+    }
     return BMS_STATUS_OK;
+}
+
+BmsStatus bms_platform_set_parameters(BmsPlatform *platform,
+                                      const BmsParameterWrite *writes,
+                                      uint8_t write_count)
+{
+    if (platform == 0) {
+        return BMS_STATUS_INVALID_ARGUMENT;
+    }
+    return bms_application_set_parameters(&platform->application, writes, write_count,
+                                          platform->realtime.timestamp_ms);
 }

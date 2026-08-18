@@ -9,9 +9,9 @@
 | SH36735 寄存器 SPI/CRC 边界 | 部分完成 | 已有帧级读写和故障映射；尚缺板级 SPI、标定与控制使能。 |
 | BMSLink 协议内核 | 已完成 | v1 编解码器、CRC 和固定测试向量。 |
 | 完整 TLSR8251 BLE 固件 | 已完成（编译级） | 自有 BLE 外壳、Custom GATT、BMSLink 接入、官方 OTA 服务与 `MCU_STARTUP_8251` 完整镜像均已链接并通过 SDK 镜像检查；尚未实机验证。 |
-| Parameter / Schema | 未开始 | 将在 BMSLink 命令处理前实现。 |
-| Protection / SOC / Balance / Heating | 未开始 | 需要先有参数与运行时调度。 |
-| 配置存储、事件、诊断 | 未开始 | 将独立定义 Flash 布局和原子提交。 |
+| Parameter / Schema | 已完成（编译级） | 21 个稳定业务 ID、分页 Schema/读写协议、交叉校验、YAML 公共清单与授权写入门禁。 |
+| Protection / SOC / Balance / Heating | 已完成（编译级） | 通用保护、基础 SOC、均衡/加热请求与同口安全规则已接入业务层；实际标定与驱动待硬件。 |
+| 配置存储、事件、诊断 | 部分完成 | 双槽 CRC 存储抽象、RAM 事件环形日志和 BMSLink 查询已完成；板级 Flash 与持久化历史待布局确认。 |
 | 官方 OTA 集成 | 已完成（编译级） | 已注册官方 OTA 服务和回调；Flash 分区与断电恢复尚待实机验证。 |
 | PC 上位机 | 未开始 | 将使用 BMSLink Python 客户端和 BLE Transport。 |
 | 移动 App | 未开始 | 协议与参数稳定后实施。 |

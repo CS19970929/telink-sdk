@@ -60,6 +60,7 @@ void bms_realtime_init(BmsRealtime *realtime, const BmsProductConfig *config)
     realtime->fault_flags = 0u;
     realtime->charger_present = 0u;
     realtime->load_present = 0u;
+    realtime->heating_requested = 0u;
 
     for (index = 0u; index < BMS_MAX_CELLS; ++index) {
         realtime->cell_voltage_mv[index] = 0u;

@@ -47,6 +47,7 @@ typedef struct {
     uint32_t fault_flags;
     uint8_t charger_present;
     uint8_t load_present;
+    uint8_t heating_requested;
 } BmsRealtime;
 
 void bms_realtime_init(BmsRealtime *realtime, const BmsProductConfig *config);
