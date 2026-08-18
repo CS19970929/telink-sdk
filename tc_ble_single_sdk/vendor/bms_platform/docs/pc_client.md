@@ -20,7 +20,7 @@
 
 ## Windows 可执行上位机
 
-仓库可直接交付单文件、无控制台窗口的 Windows 上位机。已构建的文件位于 `build/pc_client/TelinkBMS.exe`，双击即可打开，不需要输入 Python 命令或安装 Python。它首次启动时由 Windows 自动申请蓝牙权限；扫描、连接、参数、日志和 OTA 页面与 Python GUI 相同。
+仓库可直接交付单文件、无控制台窗口的 Windows 上位机。已构建的文件位于 `build/pc_client/TelinkBMS.exe`，双击即可打开，不需要输入 Python 命令或安装 Python。它首次启动时由 Windows 自动申请蓝牙权限；扫描、连接、参数、日志和 OTA 页面与 Python GUI 相同。点击“扫描”后，BMS/BMSLink 名称的设备会自动置顶和预选，双击该行（或点击“连接选中设备”）即可直接连接，无需复制或手输 BLE 地址。
 
 可复现构建入口为项目根目录的：
 

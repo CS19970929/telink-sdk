@@ -125,12 +125,56 @@ class BmsDesktop:
             if not devices:
                 messagebox.showinfo("扫描", "未发现 BLE 设备。")
                 return
-            choices = "\n".join(f"{address}  {name}" for address, name in devices)
-            selected = simpledialog.askstring("扫描结果", f"请输入要连接的地址：\n{choices}")
-            if selected:
-                self.address.set(selected.strip())
+            self._show_scan_results(devices)
         except Exception as error:
             messagebox.showerror("扫描失败", str(error))
+
+    def _show_scan_results(self, devices: list[tuple[str, str]]) -> None:
+        dialog = tk.Toplevel(self.root)
+        dialog.title("扫描结果（双击设备直接连接）")
+        dialog.transient(self.root)
+        dialog.minsize(480, 320)
+        dialog.geometry("560x360")
+        dialog.grab_set()
+
+        ttk.Label(dialog, text="双击目标设备即可连接；BMSLink 设备会优先显示。", padding=8).pack(anchor=tk.W)
+        frame = ttk.Frame(dialog, padding=(8, 0, 8, 8))
+        frame.pack(fill=tk.BOTH, expand=True)
+        table = ttk.Treeview(frame, columns=("address", "name"), show="headings")
+        table.heading("address", text="BLE 地址")
+        table.heading("name", text="设备名称")
+        table.column("address", width=180, anchor=tk.CENTER, stretch=False)
+        table.column("name", width=330, anchor=tk.W)
+        scrollbar = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=table.yview)
+        table.configure(yscrollcommand=scrollbar.set)
+        table.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        preferred_item = None
+        for address, name in sorted(devices, key=lambda item: ("bms" not in item[1].lower(), item[1], item[0])):
+            item = table.insert("", tk.END, values=(address, name))
+            if preferred_item is None and "bms" in name.lower():
+                preferred_item = item
+        if preferred_item is not None:
+            table.selection_set(preferred_item)
+            table.focus(preferred_item)
+
+        def connect_selected(_: tk.Event | None = None) -> None:
+            selected = table.selection()
+            if not selected:
+                messagebox.showwarning("未选择设备", "请选择要连接的 BLE 设备。", parent=dialog)
+                return
+            address = str(table.item(selected[0], "values")[0])
+            dialog.destroy()
+            self.address.set(address)
+            self.connect()
+
+        buttons = ttk.Frame(dialog, padding=(8, 0, 8, 8))
+        buttons.pack(fill=tk.X)
+        ttk.Button(buttons, text="连接选中设备", command=connect_selected).pack(side=tk.LEFT)
+        ttk.Button(buttons, text="取消", command=dialog.destroy).pack(side=tk.LEFT, padx=6)
+        table.bind("<Double-1>", connect_selected)
+        table.focus_set()
 
     @staticmethod
     def _replace(table: ttk.Treeview, rows: list[tuple]) -> None:

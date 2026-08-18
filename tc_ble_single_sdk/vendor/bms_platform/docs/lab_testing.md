@@ -30,6 +30,8 @@
 
 首次连接时让 Windows 完成设备发起的 Just Works 配对；参数写入和 SOC 写入只有在链路加密完成后才会被固件接受。可在 GUI 中读取、导出、比较、写入并回读参数，同时观察实时电芯、温度、功率、SOC、保护与事件页。
 
+使用 `build/pc_client/TelinkBMS.exe` 时，点击“扫描”，双击名称为 `BMSLink`（或 `Telink BMS`）的行即可连接。无需手输地址；Windows 显示的名称取决于其是否接收到了扫描响应，因此本实验镜像通常显示为 `BMSLink`。
+
 ## OTA 实验
 
 先用 Telink 下载器确认开发板 Flash 容量至少为 256 KiB，再执行：
