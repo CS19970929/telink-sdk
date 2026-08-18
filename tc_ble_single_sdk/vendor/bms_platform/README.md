@@ -16,10 +16,11 @@
 
     python tools/bms.py env
     python tools/bms.py build-core
+    python tools/bms.py build-firmware
     python tools/bms.py static
     python tools/bms.py test
 
-build-core 只编译本平台的业务核心和 AFE 边界，作为 Phase 0/1 的 TC32 语法与警告门禁；它不是可烧录 BLE 固件。完整 BLE Firmware 构建会在移植 ble_sample 的最小启动、PM 和 GATT 骨架后加入。
+build-core 只编译本平台的业务核心和 AFE 边界，作为快速 TC32 语法与警告门禁。build-firmware 构建 BMS 自有 BLE 外壳、SDK 公共运行时、`MCU_STARTUP_8251` 启动文件和 825x 协议栈，并执行 SDK 固件检查；它仍须经过实机验证后才可刷写到产品板。
 
 ## 目录
 

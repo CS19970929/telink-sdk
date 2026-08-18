@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""BMS platform's reproducible local quality gates.
-
-The platform deliberately builds only its owned sources at this stage.  BLE
-startup/linker integration is a later milestone after the board pinout is
-available and the TLSR8251 startup selection can be verified on hardware.
-"""
+"""BMS platform's reproducible local quality gates and firmware build."""
 
 from __future__ import annotations
 
@@ -21,7 +16,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SDK_ROOT = PROJECT_ROOT.parents[1]
 BUILD_ROOT = PROJECT_ROOT / "build"
 TC32_GCC = Path("C:/TelinkIoTStudio/opt/tc32/bin/tc32-elf-gcc.exe")
+TC32_OBJCOPY = Path("C:/TelinkIoTStudio/opt/tc32/bin/tc32-elf-objcopy.exe")
+TC32_SIZE = Path("C:/TelinkIoTStudio/opt/tc32/bin/tc32-elf-size.exe")
 CPPCHECK = Path("C:/Program Files/cppcheck/cppcheck.exe")
+FIRMWARE_STARTUP = SDK_ROOT / "boot" / "B85" / "cstartup_825x.S"
+FIRMWARE_DIV_MOD = SDK_ROOT / "common" / "div_mod.S"
+FIRMWARE_LINK_SCRIPT = SDK_ROOT / "project" / "tlsr_tc32" / "B85" / "boot.link"
+FIRMWARE_CHECKER = SDK_ROOT / "script" / "tl_check_fw" / "tl_check_fw2.exe"
 
 SOURCE_ROOTS = (PROJECT_ROOT / "board", PROJECT_ROOT / "core", PROJECT_ROOT / "afe", PROJECT_ROOT / "protocol")
 EXPECTED_SOURCES = (
@@ -32,6 +33,18 @@ EXPECTED_SOURCES = (
     Path("core/bms_platform.c"),
     Path("core/bms_realtime.c"),
     Path("protocol/bmslink.c"),
+)
+FIRMWARE_OWNED_SOURCES = (
+    Path("firmware/app.c"),
+    Path("firmware/bms_firmware.c"),
+    Path("firmware/bms_gatt.c"),
+    Path("firmware/main.c"),
+)
+FIRMWARE_SDK_SOURCE_ROOTS = (
+    SDK_ROOT / "common",
+    SDK_ROOT / "drivers" / "B85",
+    SDK_ROOT / "vendor" / "common",
+    SDK_ROOT / "application" / "print",
 )
 
 
@@ -102,15 +115,61 @@ def compiler_command(source: Path, output: Path) -> list[str]:
     ]
 
 
+def firmware_compiler_command(source: Path, output: Path) -> list[str]:
+    command = compiler_command(source, output)
+    if not source.is_relative_to(PROJECT_ROOT):
+        command.remove("-Werror")
+    command.insert(command.index("-c"), "-Wno-unused-parameter")
+    command.insert(command.index("-c"), "-Wno-ignored-qualifiers")
+    command.insert(command.index("-c"), "-include")
+    command.insert(command.index("-c"), str(PROJECT_ROOT / "firmware" / "app_config.h"))
+    command.insert(command.index("-c"), "-I" + str(PROJECT_ROOT / "firmware"))
+    return command
+
+
+def firmware_sources() -> list[Path]:
+    discovered = tuple(sorted(
+        source.relative_to(PROJECT_ROOT)
+        for source in (PROJECT_ROOT / "firmware").glob("*.c")
+    ))
+    if discovered != FIRMWARE_OWNED_SOURCES:
+        expected = "\n  ".join(str(path) for path in FIRMWARE_OWNED_SOURCES)
+        actual = "\n  ".join(str(path) for path in discovered)
+        fail("固件源码清单发生变化；更新 tools/bms.py 后再构建。\n期望:\n  {}\n实际:\n  {}".format(expected, actual))
+    sdk_sources = sorted(
+        source
+        for root in FIRMWARE_SDK_SOURCE_ROOTS
+        for source in root.rglob("*.c")
+    )
+    if not sdk_sources:
+        fail("未找到 SDK 固件运行时源码。")
+    return [PROJECT_ROOT / source for source in discovered] + source_files() + sdk_sources
+
+
+def firmware_object_path(source: Path, object_root: Path) -> Path:
+    try:
+        relative = source.relative_to(PROJECT_ROOT)
+        return object_root / "project" / relative.with_suffix(".o")
+    except ValueError:
+        relative = source.relative_to(SDK_ROOT)
+        return object_root / "sdk" / relative.with_suffix(".o")
+
+
 def command_env(_: argparse.Namespace) -> None:
     require_file(TC32_GCC, "TC32 编译器")
+    require_file(TC32_OBJCOPY, "TC32 Objcopy")
+    require_file(TC32_SIZE, "TC32 Size")
     require_file(CPPCHECK, "Cppcheck")
     require_file(SDK_ROOT / "proj_lib" / "liblt_825x.a", "TLSR825x 协议栈库")
     require_file(SDK_ROOT / "proj_lib" / "liblt_general_stack.a", "通用协议栈库")
+    require_file(FIRMWARE_STARTUP, "TLSR8251 启动文件")
+    require_file(FIRMWARE_DIV_MOD, "TLSR825x 除法与 CRC 运行时")
+    require_file(FIRMWARE_LINK_SCRIPT, "TLSR825x 链接脚本")
+    require_file(FIRMWARE_CHECKER, "Telink 固件检查器")
     run([str(TC32_GCC), "--version"])
     run([str(CPPCHECK), "--version"])
     print("SDK 根目录: {}".format(SDK_ROOT))
-    print("完整固件阶段必须选用 MCU_STARTUP_8251；当前 build-core 不产生可烧录镜像。")
+    print("完整固件阶段固定选用 MCU_STARTUP_8251。")
 
 
 def command_build_core(_: argparse.Namespace) -> None:
@@ -138,6 +197,82 @@ def command_build_core(_: argparse.Namespace) -> None:
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     print("已生成 {} 个 TC32 目标文件。".format(len(sources)))
     print("清单: {}".format(manifest_path))
+
+
+def command_build_firmware(_: argparse.Namespace) -> None:
+    require_file(TC32_GCC, "TC32 编译器")
+    require_file(TC32_OBJCOPY, "TC32 Objcopy")
+    require_file(TC32_SIZE, "TC32 Size")
+    require_file(FIRMWARE_STARTUP, "TLSR8251 启动文件")
+    require_file(FIRMWARE_DIV_MOD, "TLSR825x 除法与 CRC 运行时")
+    require_file(FIRMWARE_LINK_SCRIPT, "TLSR825x 链接脚本")
+    require_file(SDK_ROOT / "proj_lib" / "liblt_825x.a", "TLSR825x 协议栈库")
+
+    output_root = BUILD_ROOT / "firmware"
+    object_root = output_root / "obj"
+    object_root.mkdir(parents=True, exist_ok=True)
+    objects: list[Path] = []
+    for source in firmware_sources():
+        output = firmware_object_path(source, object_root)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        run(firmware_compiler_command(source, output))
+        objects.append(output)
+
+    startup_object = object_root / "startup" / "cstartup_825x.o"
+    startup_object.parent.mkdir(parents=True, exist_ok=True)
+    run([
+        str(TC32_GCC),
+        "-DMCU_STARTUP_8251=1",
+        "-c", str(FIRMWARE_STARTUP),
+        "-o", str(startup_object),
+    ])
+    objects.insert(0, startup_object)
+
+    div_mod_object = object_root / "startup" / "div_mod.o"
+    run([
+        str(TC32_GCC),
+        "-DMCU_STARTUP_8251=1",
+        "-c", str(FIRMWARE_DIV_MOD),
+        "-o", str(div_mod_object),
+    ])
+    objects.insert(1, div_mod_object)
+
+    elf_path = output_root / "telink_bms.elf"
+    run([
+        str(TC32_GCC),
+        "-nostdlib",
+        "-Wl,--gc-sections",
+        "-Wl,-T," + str(FIRMWARE_LINK_SCRIPT),
+        "-o", str(elf_path),
+    ] + [str(path) for path in objects] + [
+        "-L" + str(SDK_ROOT / "proj_lib"),
+        "-llt_825x",
+    ])
+    binary_path = output_root / "telink_bms.bin"
+    run([str(TC32_OBJCOPY), "-O", "binary", str(elf_path), str(binary_path)])
+    run([str(TC32_SIZE), str(elf_path)])
+    require_file(FIRMWARE_CHECKER, "Telink 固件检查器")
+    run([str(FIRMWARE_CHECKER), str(binary_path)])
+
+    manifest = {
+        "target": "tlsr8251-bms-firmware",
+        "startup_define": "MCU_STARTUP_8251=1",
+        "startup": str(FIRMWARE_STARTUP.relative_to(SDK_ROOT)),
+        "runtime_assembly": str(FIRMWARE_DIV_MOD.relative_to(SDK_ROOT)),
+        "link_script": str(FIRMWARE_LINK_SCRIPT.relative_to(SDK_ROOT)),
+        "library": "proj_lib/liblt_825x.a",
+        "sources": [
+            {
+                "path": str(source.relative_to(PROJECT_ROOT)) if source.is_relative_to(PROJECT_ROOT)
+                else "sdk/" + str(source.relative_to(SDK_ROOT)),
+                "sha256": sha256(source),
+            }
+            for source in firmware_sources()
+        ],
+    }
+    manifest_path = output_root / "build_manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    print("已生成可检查的 TLSR8251 固件: {}".format(binary_path))
 
 
 def command_static(_: argparse.Namespace) -> None:
@@ -184,6 +319,7 @@ def create_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("env", help="验证固定工具链与 SDK 依赖").set_defaults(handler=command_env)
     subparsers.add_parser("build-core", help="仅编译 BMS 自有 C 源码").set_defaults(handler=command_build_core)
+    subparsers.add_parser("build-firmware", help="构建并检查 TLSR8251 BLE 固件").set_defaults(handler=command_build_firmware)
     subparsers.add_parser("static", help="对 BMS 自有源码运行 Cppcheck").set_defaults(handler=command_static)
     subparsers.add_parser("test", help="运行不依赖硬件的协议测试").set_defaults(handler=command_test)
     return parser
