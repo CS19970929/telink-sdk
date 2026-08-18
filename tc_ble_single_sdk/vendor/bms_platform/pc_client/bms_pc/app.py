@@ -26,6 +26,10 @@ class AsyncRunner:
     def call(self, coroutine):
         return asyncio.run_coroutine_threadsafe(coroutine, self.loop).result()
 
+    def submit(self, coroutine):
+        """在线程事件循环中提交协程，但不阻塞 Tk 界面线程。"""
+        return asyncio.run_coroutine_threadsafe(coroutine, self.loop)
+
     def close(self) -> None:
         self.loop.call_soon_threadsafe(self.loop.stop)
         self.thread.join(timeout=1)
@@ -304,7 +308,38 @@ class BmsDesktop:
         def apply() -> None:
             self.ota_progress.configure(maximum=total, value=current)
             self.status.set(f"OTA 传输中：{current}/{total} 块")
-        self.root.after(0, apply)
+        try:
+            self.root.after(0, apply)
+        except (RuntimeError, tk.TclError):
+            # 用户在传输完成前关闭窗口时，Tk 已不再接受界面任务。
+            pass
+
+    def _finish_ota(self, future) -> None:
+        """等待后台 OTA 完成，再把结果交回 Tk 主线程显示。"""
+        try:
+            outcome = future.result()
+            error = None
+        except Exception as exception:
+            outcome = None
+            error = exception
+
+        def apply() -> None:
+            self.ota_update_button.configure(state=tk.NORMAL)
+            if error is not None:
+                self.status.set("OTA 失败")
+                messagebox.showerror("OTA 失败", str(error))
+                return
+            self.status.set("OTA 完成；设备正在重启")
+            messagebox.showinfo(
+                "OTA 完成",
+                f"已确认写入 {outcome.image_size} 字节，{outcome.block_count} 个数据块。\n\n"
+                "请等待设备重启后重新连接，并确认“固件”版本已更新。",
+            )
+
+        try:
+            self.root.after(0, apply)
+        except (RuntimeError, tk.TclError):
+            pass
 
     def start_ota(self) -> None:
         try:
@@ -319,10 +354,12 @@ class BmsDesktop:
             ):
                 return
             self.ota_progress.configure(value=0, maximum=1)
-            outcome = self._call(self.client.ota_update(path, self._set_ota_progress))
-            self.status.set("OTA 完成；设备可能正在重启")
-            messagebox.showinfo("OTA 完成", f"已确认写入 {outcome.image_size} 字节，{outcome.block_count} 个数据块。")
+            self.ota_update_button.configure(state=tk.DISABLED)
+            self.status.set("OTA 准备传输")
+            future = self.runner.submit(self.client.ota_update(path, self._set_ota_progress))
+            threading.Thread(target=self._finish_ota, args=(future,), daemon=True).start()
         except Exception as error:
+            self.ota_update_button.configure(state=tk.NORMAL)
             self.status.set("OTA 失败")
             messagebox.showerror("OTA 失败", str(error))
 
