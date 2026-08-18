@@ -1,0 +1,6 @@
+# BMS platform reproducible build and host-tool by-products.
+/tc_ble_single_sdk/vendor/bms_platform/build/
+/tc_ble_single_sdk/vendor/bms_platform/__pycache__/
+/tc_ble_single_sdk/vendor/bms_platform/**/*.pyc
+/tc_ble_single_sdk/vendor/bms_platform/.vscode/
+/tc_ble_single_sdk/vendor/bms_platform/.idea/
