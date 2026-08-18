@@ -86,9 +86,9 @@ static BmsStatus bms_firmware_write_device_info(const BmsLinkFrame *request)
     const BmsProductConfig *product = &g_bms_firmware.application.product;
     bms_firmware_prepare_response(request, &response);
     response.payload_length = 12u;
-    response.payload[0] = 0u;
-    response.payload[1] = 2u;
-    response.payload[2] = 0u;
+    response.payload[0] = (uint8_t)BMS_FIRMWARE_VERSION_MAJOR;
+    response.payload[1] = (uint8_t)BMS_FIRMWARE_VERSION_MINOR;
+    response.payload[2] = (uint8_t)BMS_FIRMWARE_VERSION_PATCH;
     response.payload[3] = 0x51u;
     response.payload[4] = (uint8_t)product->afe_kind;
     response.payload[5] = product->cell_count;

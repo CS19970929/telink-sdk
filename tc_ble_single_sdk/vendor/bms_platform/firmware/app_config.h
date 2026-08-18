@@ -4,6 +4,22 @@
 /* This is a compile profile, not a board pin assignment. */
 #define BMS_BOARD_PROFILE_COMPILE_ONLY       1
 
+/* The proof OTA target changes only PATCH to make a reboot observable. */
+#ifndef BMS_FIRMWARE_VERSION_MAJOR
+#define BMS_FIRMWARE_VERSION_MAJOR            0u
+#endif
+#ifndef BMS_FIRMWARE_VERSION_MINOR
+#define BMS_FIRMWARE_VERSION_MINOR            2u
+#endif
+#ifndef BMS_FIRMWARE_VERSION_PATCH
+#define BMS_FIRMWARE_VERSION_PATCH            0u
+#endif
+#if ((BMS_FIRMWARE_VERSION_MAJOR > 255u) || \
+     (BMS_FIRMWARE_VERSION_MINOR > 255u) || \
+     (BMS_FIRMWARE_VERSION_PATCH > 255u))
+#error "BMS firmware version components must fit in one byte"
+#endif
+
 /* Only tools/bms.py lab targets set these values to 1. */
 #ifndef BMS_LAB_SIMULATOR_ENABLE
 #define BMS_LAB_SIMULATOR_ENABLE             0

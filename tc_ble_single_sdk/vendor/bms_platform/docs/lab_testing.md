@@ -8,7 +8,7 @@
 
     python tools/bms.py build-lab-firmware
 
-产物为 `build/lab_firmware/telink_bms.bin`。下载到官方 TLSR8251 开发板后，设备应广播名称 `Telink BMS`，扫描响应包含 `BMSLink`。模拟器每 500 ms 发布 20S、4 路温度、约 74 V 总压和在 +1200 mA / -800 mA 间切换的电流。数值仅用于验证显示、单位、分片、SOC、保护、均衡请求、事件和参数回读；不是 AFE 标定值。
+产物为 `build/lab_firmware/telink_bms.bin`。下载到官方 TLSR8251 开发板后，设备应广播名称 `Telink BMS`，扫描响应包含 `BMSLink`。模拟器每 500 ms 发布 20S、4 路温度和约 74 V 总压；单体电压、总压和温度在 20 秒周期内连续变化，电流则在 +400 mA 至 +1920 mA、-400 mA 至 -1920 mA 间切换。数值仅用于验证显示、单位、分片、SOC、保护、均衡请求、事件和参数回读；不是 AFE 标定值。
 
 ### GPIO_PD4
 
@@ -37,13 +37,17 @@
 先用 Telink 下载器确认开发板 Flash 容量至少为 256 KiB，再执行：
 
     python tools/bms.py build-lab-ota-firmware
+    python tools/bms.py build-lab-ota-proof-firmware
 
-把该镜像下载到开发板，再用 GUI 的 OTA 页或以下命令选择同一实验室镜像：
+先用 Telink 下载器把基准镜像 `build/lab_ota_firmware/telink_bms.bin` 下载到开发板。该镜像版本为 `0.2.0`，它才会启用 OTA 服务；因此普通 `lab_firmware` 的 OTA 页保持禁用是预期的安全状态。
 
-    cd pc_client
-    python -m bms_pc.cli --address <BLE地址> --image ..\build\lab_ota_firmware\telink_bms.bin --confirm-ota ota
+重新连接上位机，进入 OTA 页并点击“校验 OTA 信息”。必须显示“官方 Telink OTA 服务：可用”和“板级 Flash 布局已批准：是”，随后“选择镜像并升级”按钮才会启用。选择验证镜像 `build/lab_ota_proof_firmware/telink_bms.bin`，确认后开始升级：
 
-OTA 完成标准是 PC 收到 SDK `0xFF06` 成功结果，随后开发板重启并再次广播。升级期间不得断电或断开下载器。该镜像固定使用 SDK 参考的 `0x20000` 次镜像槽，不可用于未知 Flash 容量、真实 BMS 板或量产板。
+1. 进度条达到最后一个数据块且弹出“OTA 完成”，表示 PC 收到了 SDK `0xFF06` 的成功结果，镜像传输、CRC 和 Flash 写入已通过。
+2. 等待开发板自动重启并重新广播，然后点击“扫描”，双击 `BMSLink` 重新连接并点击“刷新”。
+3. 仪表盘的“固件”必须从 `0.2.0` 变为 `0.2.1`。这是新镜像已经被 Bootloader 选中并实际启动的端到端证据，不只是传输完成。
+
+如果 PC 已报告成功但重连后仍是 `0.2.0`，则不得判定为升级完成：先停止继续测试，检查是否选择了 `lab_ota_proof_firmware` 镜像、开发板 Flash 容量和 Telink 下载器的双镜像配置。升级期间不得断电或断开下载器。两个 OTA 实验镜像均固定使用 SDK 参考的 `0x20000` 次镜像槽，不可用于未知 Flash 容量、真实 BMS 板或量产板。
 
 ## 不覆盖的范围
 

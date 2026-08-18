@@ -305,6 +305,12 @@ def command_build_lab_ota_firmware(_: argparse.Namespace) -> None:
         "BMS_LAB_SIMULATOR_ENABLE=1", "BMS_LAB_OTA_ENABLE=1"))
 
 
+def command_build_lab_ota_proof_firmware(_: argparse.Namespace) -> None:
+    build_firmware("lab_ota_proof_firmware", "afe-simulator-ota-proof", (
+        "BMS_LAB_SIMULATOR_ENABLE=1", "BMS_LAB_OTA_ENABLE=1",
+        "BMS_FIRMWARE_VERSION_PATCH=1"))
+
+
 def command_build_pc_exe(_: argparse.Namespace) -> None:
     entry_point = PC_CLIENT_ROOT / "run_gui.py"
     require_file(entry_point, "PC 上位机图形入口")
@@ -406,6 +412,7 @@ def create_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("build-firmware", help="构建并检查 TLSR8251 BLE 固件").set_defaults(handler=command_build_firmware)
     subparsers.add_parser("build-lab-firmware", help="构建不访问 AFE/GPIO 的 BLE 通信模拟固件").set_defaults(handler=command_build_lab_firmware)
     subparsers.add_parser("build-lab-ota-firmware", help="构建官方开发板专用的模拟数据 + OTA 实验固件").set_defaults(handler=command_build_lab_ota_firmware)
+    subparsers.add_parser("build-lab-ota-proof-firmware", help="构建版本 0.2.1 的 OTA 启动验证镜像").set_defaults(handler=command_build_lab_ota_proof_firmware)
     subparsers.add_parser("build-pc-exe", help="生成可双击运行的 Windows 上位机 EXE").set_defaults(handler=command_build_pc_exe)
     subparsers.add_parser("static", help="对 BMS 自有源码运行 Cppcheck").set_defaults(handler=command_static)
     subparsers.add_parser("test", help="运行不依赖硬件的协议测试").set_defaults(handler=command_test)
