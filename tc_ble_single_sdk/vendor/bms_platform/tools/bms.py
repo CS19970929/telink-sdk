@@ -23,7 +23,7 @@ BUILD_ROOT = PROJECT_ROOT / "build"
 TC32_GCC = Path("C:/TelinkIoTStudio/opt/tc32/bin/tc32-elf-gcc.exe")
 CPPCHECK = Path("C:/Program Files/cppcheck/cppcheck.exe")
 
-SOURCE_ROOTS = (PROJECT_ROOT / "board", PROJECT_ROOT / "core", PROJECT_ROOT / "afe")
+SOURCE_ROOTS = (PROJECT_ROOT / "board", PROJECT_ROOT / "core", PROJECT_ROOT / "afe", PROJECT_ROOT / "protocol")
 EXPECTED_SOURCES = (
     Path("afe/afe_interface.c"),
     Path("afe/sh36735/sh36735_adapter.c"),
@@ -31,6 +31,7 @@ EXPECTED_SOURCES = (
     Path("board/bms_product.c"),
     Path("core/bms_platform.c"),
     Path("core/bms_realtime.c"),
+    Path("protocol/bmslink.c"),
 )
 
 
@@ -167,12 +168,24 @@ def command_static(_: argparse.Namespace) -> None:
     print("Cppcheck 通过，报告: {}".format(result_path))
 
 
+def command_test(_: argparse.Namespace) -> None:
+    environment = dict(__import__("os").environ)
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    command = [sys.executable, "-B", "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py"]
+    print("+ " + " ".join(command))
+    result = subprocess.run(command, cwd=str(PROJECT_ROOT), env=environment, check=False)
+    if result.returncode != 0:
+        fail("协议测试失败，退出码为 {}".format(result.returncode))
+    print("协议测试通过。")
+
+
 def create_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Telink BMS 平台质量门禁")
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("env", help="验证固定工具链与 SDK 依赖").set_defaults(handler=command_env)
     subparsers.add_parser("build-core", help="仅编译 BMS 自有 C 源码").set_defaults(handler=command_build_core)
     subparsers.add_parser("static", help="对 BMS 自有源码运行 Cppcheck").set_defaults(handler=command_static)
+    subparsers.add_parser("test", help="运行不依赖硬件的协议测试").set_defaults(handler=command_test)
     return parser
 
 

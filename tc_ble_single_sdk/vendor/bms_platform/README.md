@@ -8,7 +8,7 @@
 - AFE 边界：以采样、均衡、逻辑功率路径、硬件故障和低功耗能力抽象；
 - SH36735：仅实现 SPI/CRC/寄存器访问边界，尚未接入板级 SPI、RSENSE、NTC 曲线和 MOS 引脚；
 - 目标工具链：Telink TC32 GCC 4.5.1-tc32-1.3，不使用 ARM GCC；
-- BLE、BMSLink、参数、保护和 OTA 将在后续独立提交中实现。
+- BMSLink v1 编解码器已就绪；BLE、参数、保护和 OTA 将在后续独立提交中实现。
 
 ## 构建与静态分析
 
@@ -17,6 +17,7 @@
     python tools/bms.py env
     python tools/bms.py build-core
     python tools/bms.py static
+    python tools/bms.py test
 
 build-core 只编译本平台的业务核心和 AFE 边界，作为 Phase 0/1 的 TC32 语法与警告门禁；它不是可烧录 BLE 固件。完整 BLE Firmware 构建会在移植 ble_sample 的最小启动、PM 和 GATT 骨架后加入。
 

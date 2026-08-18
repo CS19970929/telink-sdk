@@ -15,6 +15,7 @@
     python tools/bms.py static
 
 `env` 验证工具与 SDK 必需库。`build-core` 使用 TC32 对 BMS 自有源码逐一编译，启用 `-Wall -Wextra -Werror`，并生成 `build/tc32/build_manifest.json`。`static` 运行 Cppcheck 并生成 `build/static/cppcheck.xml`。
+`test` 运行不依赖目标板的协议固定向量；该命令禁用 Python 字节码缓存，避免在工作树产生临时文件。
 
 ## 本阶段边界
 
