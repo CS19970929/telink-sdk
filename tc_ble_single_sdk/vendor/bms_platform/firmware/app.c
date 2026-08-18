@@ -14,6 +14,7 @@
 #define BMS_ADV_INTERVAL_MIN             ADV_INTERVAL_100MS
 #define BMS_ADV_INTERVAL_MAX             ADV_INTERVAL_105MS
 #define BMS_ADV_CHANNEL                  (BLT_ENABLE_ADV_37 | BLT_ENABLE_ADV_38 | BLT_ENABLE_ADV_39)
+#define BMS_PC2_TOGGLE_INTERVAL_US       (1000000u)
 
 _attribute_data_retention_ u8 blt_rxfifo_b[BMS_RX_FIFO_SIZE * BMS_RX_FIFO_NUM];
 _attribute_data_retention_ my_fifo_t blt_rxfifo = {
@@ -26,6 +27,8 @@ _attribute_data_retention_ my_fifo_t blt_txfifo = {
 
 static own_addr_type_t g_own_address_type = OWN_ADDRESS_PUBLIC;
 static uint8_t g_bms_write_session_authorized;
+static u32 g_pc2_toggle_tick;
+static u8 g_pc2_level;
 static const u8 g_advertising_data[] = {
     0x0bu, 0x09u, 'T', 'e', 'l', 'i', 'n', 'k', ' ', 'B', 'M', 'S',
     0x02u, 0x01u, 0x06u
@@ -33,6 +36,25 @@ static const u8 g_advertising_data[] = {
 static const u8 g_scan_response[] = {
     0x08u, 0x09u, 'B', 'M', 'S', 'L', 'i', 'n', 'k'
 };
+
+static void bms_app_init_pc2_heartbeat(void)
+{
+    gpio_set_func(GPIO_PC2, AS_GPIO);
+    gpio_set_input_en(GPIO_PC2, 0u);
+    gpio_write(GPIO_PC2, 0u);
+    gpio_set_output_en(GPIO_PC2, 1u);
+    g_pc2_level = 0u;
+    g_pc2_toggle_tick = clock_time();
+}
+
+static void bms_app_process_pc2_heartbeat(void)
+{
+    if (clock_time_exceed(g_pc2_toggle_tick, BMS_PC2_TOGGLE_INTERVAL_US)) {
+        g_pc2_toggle_tick = clock_time();
+        g_pc2_level ^= 1u;
+        gpio_write(GPIO_PC2, g_pc2_level);
+    }
+}
 
 static void bms_app_on_connect(u8 event, u8 *parameters, int length)
 {
@@ -122,6 +144,7 @@ void user_init_normal(void)
 
     bms_firmware_init(bms_gatt_transmit, 0);
     bms_firmware_set_write_authorizer(bms_app_write_is_authorized, 0);
+    bms_app_init_pc2_heartbeat();
 #if (BMS_LAB_SIMULATOR_ENABLE)
     bms_lab_simulator_init();
 #endif
@@ -152,4 +175,5 @@ void main_loop(void)
     bms_lab_simulator_process(clock_time() / CLOCK_SYS_CLOCK_1MS);
 #endif
     bms_gatt_process();
+    bms_app_process_pc2_heartbeat();
 }
