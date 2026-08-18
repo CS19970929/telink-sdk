@@ -90,6 +90,17 @@ static int bms_gatt_receive(void *parameter)
     return 0;
 }
 
+static int bms_gatt_ota_receive(void *parameter)
+{
+#if (BLE_OTA_SERVER_ENABLE && BMS_OTA_LAYOUT_APPROVED)
+    return otaWrite(parameter);
+#else
+    /* Do not reach the SDK Flash writer before the board layout is approved. */
+    (void)parameter;
+    return 0;
+#endif
+}
+
 static const attribute_t g_attributes[] = {
     {BMS_GATT_END - 1u, 0u, 0u, 0u, 0, 0, 0, 0},
     {3u, ATT_PERMISSIONS_READ, 2u, 2u, (u8 *)&g_primary_service_uuid,
@@ -115,7 +126,7 @@ static const attribute_t g_attributes[] = {
     {0u, ATT_PERMISSIONS_READ, 2u, sizeof(g_ota_declaration),
      (u8 *)&g_characteristic_uuid, (u8 *)g_ota_declaration, 0, 0},
     {0u, ATT_PERMISSIONS_RDWR, 16u, sizeof(g_ota_value), (u8 *)g_ota_value_uuid,
-     g_ota_value, otaWrite, 0},
+     g_ota_value, bms_gatt_ota_receive, 0},
     {0u, ATT_PERMISSIONS_RDWR, 2u, sizeof(g_ota_ccc), (u8 *)&g_ccc_uuid,
      g_ota_ccc, 0, 0}
 };
@@ -168,7 +179,7 @@ void bms_gatt_process(void)
 
 void bms_gatt_ota_started(void)
 {
-    bls_ota_setTimeout(15u * 1000u * 1000u);
+    (void)blc_ota_setOtaProcessTimeout(BMS_OTA_PROCESS_TIMEOUT_SECONDS);
 }
 
 void bms_gatt_ota_finished(int result)

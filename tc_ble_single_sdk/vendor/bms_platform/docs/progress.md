@@ -12,9 +12,9 @@
 | Parameter / Schema | 已完成（编译级） | 21 个稳定业务 ID、分页 Schema/读写协议、交叉校验、YAML 公共清单与授权写入门禁。 |
 | Protection / SOC / Balance / Heating | 已完成（编译级） | 通用保护、基础 SOC、均衡/加热请求与同口安全规则已接入业务层；实际标定与驱动待硬件。 |
 | 配置存储、事件、诊断 | 部分完成 | 双槽 CRC 存储抽象、RAM 事件环形日志和 BMSLink 查询已完成；板级 Flash 与持久化历史待布局确认。 |
-| 官方 OTA 集成 | 已完成（编译级） | 已注册官方 OTA 服务和回调；Flash 分区与断电恢复尚待实机验证。 |
-| PC 上位机 | 已完成（演示/通信级） | Tk Dashboard、Cells、Temperature、参数导入导出、故障/事件、CLI、DemoTransport 与可选 Bleak 实机传输均已实现并有离线测试；真实 BLE/授权写入需硬件验证。 |
-| 移动 App | 进行中 | 复用 BMSLink/Schema 的跨端客户端骨架正在建设；真实 BLE 和移动端 OTA 仍需设备验证。 |
+| 官方 OTA 集成 | 已完成（编译级，默认安全禁用） | 官方服务、legacy 传输格式、180 秒超时和结果回调已接入；`BMS_OTA_LAYOUT_APPROVED=0` 时 SDK Flash 写入器不会初始化或被调用。批准 OTA 时还强制提供经审核的镜像大小与启动槽位，并在 SDK 要求的 `cpu_wakeup_init()` 前配置。分区/断电恢复仍待实机验证。 |
+| PC 上位机 | 已完成（演示/通信级） | Tk Dashboard、Cells、Temperature、参数导入导出、故障/事件、CLI、DemoTransport 与可选 Bleak 实机传输均已实现并有离线测试；包含受板级批准门禁的 Telink OTA 数据传输和成功结果确认。真实 BLE/授权写入/OTA 仍需硬件验证。 |
+| 移动 App | 已完成（源码级） | Flutter Android/iOS 单代码库实现了扫描、连接、分片 BMSLink、实时/电芯/温度/参数/故障/OTA 信息页，并携带受测试约束的公共 Schema；本机未安装 Flutter/Dart，尚未执行移动构建或真机 BLE 验证。 |
 
 ## 硬件待确认项
 

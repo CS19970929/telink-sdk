@@ -20,7 +20,13 @@ RX 支持 Write 和 Write Without Response；TX 为 Notify。它们传输连续 
 
 ## OTA
 
-OTA 使用 SDK 官方 Telink OTA 服务及 `otaWrite` 入口，与 BMS Service 并列，不能通过 BMSLink 自行重写固件数据传输。当前代码完成官方服务注册、15 秒超时设置和回调接入；`build-firmware` 已生成镜像并通过 SDK 的 `tl_check_fw2.exe` 检查。Flash 分区、写保护策略和实机升级恢复测试必须在确认芯片 Flash 容量、量产布局与下载方式后完成，当前编译配置不应直接量产或刷写。
+OTA 使用 SDK 官方 Telink OTA 服务及 `otaWrite` 入口，与 BMS Service 并列，不能通过 BMSLink 自行重写固件数据传输。服务端采用 SDK legacy OTA 格式：启动 `0xFF01`，每个 20 字节 PDU 为 `块序号:u16 + 数据:16 + CRC16:u16`，结束为 `0xFF02 + 最后块序号 + 反码`，通过 `0xFF06` 通知结果。PC 客户端按此流程实现，并等待成功结果才显示完成。
+
+默认 `BMS_OTA_LAYOUT_APPROVED=0` 是故意的安全状态：固件不会初始化 SDK OTA server，OTA 特征的写回调也不会进入 `otaWrite`，`OTA_INFO` 会报告不可用。仅当板级 Flash 容量、双镜像启动地址、未来最大镜像、写保护、稳定供电及断电恢复已验证时，才可同时填写 `BMS_OTA_FIRMWARE_SIZE_KB`、`BMS_OTA_BOOT_ADDRESS`（仅 `0x20000` / `0x40000`）并把批准宏设为 `1`。三项不是完整且合法的组合会直接编译失败；通过后，镜像大小和启动地址会在 `cpu_wakeup_init()` 前交给 SDK，绝不静默使用默认槽位。已批准配置使用 `BMS_OTA_PROCESS_TIMEOUT_SECONDS=180`（SDK 允许 5–1000 秒）及 20 ms 数据包间隔上限；数值应在目标链路回归中再确认。`build-firmware` 可生成镜像并通过 SDK 的 `tl_check_fw2.exe` 检查，但这不构成实机刷写许可。
+
+## BLE 安全会话
+
+默认启用 SDK 的可绑定、无输入输出配对及链路加密。连接、断开和配对失败都会清除 BMSLink 写入授权；只有收到 SDK 的“连接加密完成”主机事件后，参数写入与 SOC 控制才被放行。OTA 是独立的 SDK 通道，除上述 Flash 布局总开关外，量产方案还应把配对策略、调试口及升级授权纳入板级安全评审。
 
 ## 板级安全边界
 

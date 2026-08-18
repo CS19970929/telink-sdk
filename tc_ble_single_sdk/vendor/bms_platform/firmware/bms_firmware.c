@@ -1,4 +1,5 @@
 #include "bms_firmware.h"
+#include "app_config.h"
 
 #define BMS_FIRMWARE_MAX_PARAMETER_WRITES (21u)
 
@@ -316,9 +317,9 @@ static BmsStatus bms_firmware_ota_info(const BmsLinkFrame *request)
     BmsLinkFrame response;
     bms_firmware_prepare_response(request, &response);
     response.payload_length = 4u;
-    response.payload[0] = 1u;
-    response.payload[1] = 0u;
-    response.payload[2] = 15u;
+    response.payload[0] = (BLE_OTA_SERVER_ENABLE && BMS_OTA_LAYOUT_APPROVED) ? 1u : 0u;
+    response.payload[1] = BMS_OTA_LAYOUT_APPROVED ? 1u : 0u;
+    response.payload[2] = BMS_OTA_PROCESS_TIMEOUT_SECONDS;
     response.payload[3] = 0u;
     return bms_firmware_send(&response);
 }

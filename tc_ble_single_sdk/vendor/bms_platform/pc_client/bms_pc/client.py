@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import struct
+from pathlib import Path
+from typing import Callable
 
 from .protocol import Command, Decoder, FLAG_ERROR, FLAG_RESPONSE, Frame
 from .transport import BmsTransport
@@ -196,3 +198,17 @@ class BmsClient:
         if len(payload) != 4:
             raise BmsProtocolError("OTA 信息长度错误")
         return bool(payload[0]), bool(payload[1]), payload[2]
+
+    async def ota_update(self, image_path: str | Path,
+                         progress: Callable[[int, int], None] | None = None):
+        """Perform a checked Telink OTA transfer after the firmware permits it."""
+        from .ota import OtaError, load_firmware_image, transfer_telink_ota
+        from .transport import BleakTransport
+
+        available, layout_approved, timeout_seconds = await self.ota_info()
+        if not available or not layout_approved:
+            raise OtaError("设备未批准 OTA Flash 布局，已拒绝写 Flash")
+        if not isinstance(self.transport, BleakTransport):
+            raise OtaError("OTA 仅支持已连接的真实 BleakTransport，不支持演示设备")
+        return await transfer_telink_ota(self.transport, load_firmware_image(image_path),
+                                         timeout_seconds, progress)

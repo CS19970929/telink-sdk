@@ -25,10 +25,11 @@ class DemoClientTests(unittest.TestCase):
             ota = await client.ota_info()
             self.assertEqual(info.cell_count, 20)
             self.assertEqual(len(realtime.cells_mv), 20)
+            self.assertGreater(realtime.pack_voltage_mv, 65535)
             self.assertEqual(len(parameters), 4)
             self.assertIn(4200, [item.value for item in updated])
             self.assertEqual(faults, (0, 0, 0))
-            self.assertTrue(ota[0])
+            self.assertFalse(ota[0])
             await client.disconnect()
 
         asyncio.run(scenario())

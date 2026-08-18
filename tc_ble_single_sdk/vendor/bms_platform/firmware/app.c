@@ -24,6 +24,7 @@ _attribute_data_retention_ my_fifo_t blt_txfifo = {
 };
 
 static own_addr_type_t g_own_address_type = OWN_ADDRESS_PUBLIC;
+static uint8_t g_bms_write_session_authorized;
 static const u8 g_advertising_data[] = {
     0x0bu, 0x09u, 'T', 'e', 'l', 'i', 'n', 'k', ' ', 'B', 'M', 'S',
     0x02u, 0x01u, 0x06u
@@ -37,6 +38,7 @@ static void bms_app_on_connect(u8 event, u8 *parameters, int length)
     (void)event;
     (void)parameters;
     (void)length;
+    g_bms_write_session_authorized = 0u;
 }
 
 static void bms_app_on_terminate(u8 event, u8 *parameters, int length)
@@ -44,6 +46,30 @@ static void bms_app_on_terminate(u8 event, u8 *parameters, int length)
     (void)event;
     (void)parameters;
     (void)length;
+    g_bms_write_session_authorized = 0u;
+}
+
+static uint8_t bms_app_write_is_authorized(void *context)
+{
+    (void)context;
+    return g_bms_write_session_authorized;
+}
+
+static int bms_app_host_event(u32 host_event, u8 *parameters, int length)
+{
+    (void)parameters;
+    (void)length;
+    switch ((u8)host_event) {
+    case GAP_EVT_SMP_CONN_ENCRYPTION_DONE:
+        g_bms_write_session_authorized = 1u;
+        break;
+    case GAP_EVT_SMP_PAIRING_FAIL:
+        g_bms_write_session_authorized = 0u;
+        break;
+    default:
+        break;
+    }
+    return 0;
 }
 
 void user_init_normal(void)
@@ -67,13 +93,34 @@ void user_init_normal(void)
     blc_l2cap_register_handler(blc_l2cap_packet_receive);
     bms_gatt_init();
     blc_att_setRxMtuSize(MTU_SIZE_SETTING);
-    blc_smp_setSecurityLevel(No_Security);
 
+#if (BLE_APP_SECURITY_ENABLE)
+    /* Follow the SDK BLE peripheral SMP initialization order. */
+    bls_smp_configPairingSecurityInfoStorageAddr(flash_sector_smp_storage);
+    blc_smp_setSecurityLevel(Unauthenticated_Pairing_with_Encryption);
+    blc_smp_setBondingMode(Bondable_Mode);
+    blc_smp_setIoCapability(IO_CAPABILITY_NO_IN_NO_OUT);
+    blc_smp_peripheral_init();
+    blc_smp_configSecurityRequestSending(SecReq_IMM_SEND, SecReq_PEND_SEND, 1000u);
+    blc_gap_registerHostEventHandler(bms_app_host_event);
+    blc_gap_setEventMask(GAP_EVT_MASK_SMP_PAIRING_BEGIN |
+                         GAP_EVT_MASK_SMP_PAIRING_SUCCESS |
+                         GAP_EVT_MASK_SMP_PAIRING_FAIL |
+                         GAP_EVT_MASK_SMP_CONN_ENCRYPTION_DONE);
+#else
+    blc_smp_setSecurityLevel(No_Security);
+#endif
+
+#if (BLE_OTA_SERVER_ENABLE && BMS_OTA_LAYOUT_APPROVED)
     blc_ota_initOtaServer_module();
+    (void)blc_ota_setOtaProcessTimeout(BMS_OTA_PROCESS_TIMEOUT_SECONDS);
+    (void)blc_ota_setOtaDataPacketTimeout(20u);
     bls_ota_registerStartCmdCb(bms_gatt_ota_started);
     bls_ota_registerResultIndicateCb(bms_gatt_ota_finished);
+#endif
 
     bms_firmware_init(bms_gatt_transmit, 0);
+    bms_firmware_set_write_authorizer(bms_app_write_is_authorized, 0);
     bls_ll_setAdvData((u8 *)g_advertising_data, sizeof(g_advertising_data));
     bls_ll_setScanRspData((u8 *)g_scan_response, sizeof(g_scan_response));
     advertising_status = bls_ll_setAdvParam(BMS_ADV_INTERVAL_MIN, BMS_ADV_INTERVAL_MAX,

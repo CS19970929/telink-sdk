@@ -68,14 +68,22 @@ class BmsDesktop:
         self.ota_text = tk.Text(self.tabs, height=12, state=tk.DISABLED)
         ota_frame = ttk.Frame(self.tabs)
         self.ota_text.pack(in_=ota_frame, fill=tk.BOTH, expand=True, padx=8, pady=8)
-        ttk.Button(ota_frame, text="校验 OTA 信息", command=self.show_ota).pack(pady=(0, 8))
+        ota_actions = ttk.Frame(ota_frame)
+        ota_actions.pack(pady=(0, 8))
+        ttk.Button(ota_actions, text="校验 OTA 信息", command=self.show_ota).pack(side=tk.LEFT)
+        self.ota_update_button = ttk.Button(ota_actions, text="选择镜像并升级",
+                                            command=self.start_ota, state=tk.DISABLED)
+        self.ota_update_button.pack(side=tk.LEFT, padx=6)
+        self.ota_progress = ttk.Progressbar(ota_frame, mode="determinate", maximum=1)
+        self.ota_progress.pack(fill=tk.X, padx=8, pady=(0, 8))
         self.tabs.add(ota_frame, text="OTA")
 
         actions = ttk.Frame(self.root, padding=(8, 0, 8, 8))
         actions.pack(fill=tk.X)
         ttk.Button(actions, text="导出参数", command=self.export_parameters).pack(side=tk.LEFT)
         ttk.Button(actions, text="导入并写入参数", command=self.import_parameters).pack(side=tk.LEFT, padx=6)
-        ttk.Label(actions, text="OTA 传输在板级 Flash 布局验收前被刻意禁用。").pack(side=tk.RIGHT)
+        ttk.Button(actions, text="与文件比较参数", command=self.diff_parameters).pack(side=tk.LEFT)
+        ttk.Label(actions, text="OTA 仅在设备显式批准 Flash 布局后开放。").pack(side=tk.RIGHT)
 
     def _table(self, title: str, columns: tuple[str, ...]) -> ttk.Treeview:
         frame = ttk.Frame(self.tabs)
@@ -197,18 +205,82 @@ class BmsDesktop:
         except Exception as error:
             messagebox.showerror("导入/写入失败", str(error))
 
+    def diff_parameters(self) -> None:
+        if not self._parameters:
+            messagebox.showwarning("没有参数", "请先刷新参数。")
+            return
+        path = filedialog.askopenfilename(filetypes=[("JSON", "*.json")])
+        if not path:
+            return
+        try:
+            source = json.loads(Path(path).read_text(encoding="utf-8"))
+            expected = {int(key, 0): int(value) for key, value in source.items()}
+            lines = []
+            for parameter_id in sorted(set(self._parameters) | set(expected)):
+                current = self._parameters.get(parameter_id)
+                target = expected.get(parameter_id)
+                if current != target:
+                    lines.append(f"0x{parameter_id:04X}: 设备={current!s}，文件={target!s}")
+            if not lines:
+                messagebox.showinfo("参数比较", "设备参数与文件完全一致。")
+                return
+            dialog = tk.Toplevel(self.root)
+            dialog.title("参数差异")
+            dialog.minsize(520, 280)
+            text = tk.Text(dialog, wrap=tk.NONE)
+            text.insert(tk.END, "\n".join(lines))
+            text.configure(state=tk.DISABLED)
+            text.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+        except Exception as error:
+            messagebox.showerror("参数比较失败", str(error))
+
     def show_ota(self) -> None:
         try:
             available, layout_approved, timeout = self._call(self.client.ota_info())
+            can_update = (available and layout_approved and self.client is not None and
+                          isinstance(self.client.transport, BleakTransport))
+            self.ota_update_button.configure(state=tk.NORMAL if can_update else tk.DISABLED)
+            if not available or not layout_approved:
+                next_step = ("固件目前以安全默认值拒绝 OTA；完成 Flash 分区、镜像容量、"
+                             "断电恢复及实机回归后，才可将 BMS_OTA_LAYOUT_APPROVED 设为 1。")
+            elif not isinstance(self.client.transport, BleakTransport):
+                next_step = "演示设备不支持实际刷写；请连接真实 BLE 设备。"
+            else:
+                next_step = "可选择 SDK 构建且已检查过的 .bin 镜像；升级过程中请保持供电和 BLE 连接。"
             content = (f"官方 Telink OTA 服务: {'可用' if available else '不可用'}\n"
                        f"板级 Flash 布局已批准: {'是' if layout_approved else '否'}\n"
                        f"服务端超时: {timeout} 秒\n\n"
-                       "为避免对未知 Flash 布局刷写，当前上位机仅提供 OTA 状态检查；"
-                       "在完成目标板分区、断电恢复和升级回归验证后，再启用正式传输入口。")
+                       + next_step)
             self.ota_text.configure(state=tk.NORMAL); self.ota_text.delete("1.0", tk.END)
             self.ota_text.insert(tk.END, content); self.ota_text.configure(state=tk.DISABLED)
         except Exception as error:
             messagebox.showerror("OTA 查询失败", str(error))
+
+    def _set_ota_progress(self, current: int, total: int) -> None:
+        def apply() -> None:
+            self.ota_progress.configure(maximum=total, value=current)
+            self.status.set(f"OTA 传输中：{current}/{total} 块")
+        self.root.after(0, apply)
+
+    def start_ota(self) -> None:
+        try:
+            available, layout_approved, _ = self._call(self.client.ota_info())
+            if not available or not layout_approved:
+                raise RuntimeError("设备未批准 OTA Flash 布局，无法开始升级")
+            path = filedialog.askopenfilename(filetypes=[("Telink 固件镜像", "*.bin")])
+            if not path:
+                return
+            if not messagebox.askyesno(
+                "确认 OTA", "此操作会向设备 Flash 写入新固件。请确认电池供电稳定且可接受升级失败风险。\n\n继续？"
+            ):
+                return
+            self.ota_progress.configure(value=0, maximum=1)
+            outcome = self._call(self.client.ota_update(path, self._set_ota_progress))
+            self.status.set("OTA 完成；设备可能正在重启")
+            messagebox.showinfo("OTA 完成", f"已确认写入 {outcome.image_size} 字节，{outcome.block_count} 个数据块。")
+        except Exception as error:
+            self.status.set("OTA 失败")
+            messagebox.showerror("OTA 失败", str(error))
 
     def close(self) -> None:
         if self.client is not None:

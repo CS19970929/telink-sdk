@@ -14,6 +14,8 @@ BMS_SERVICE_UUID = "b1a50001-a00d-4692-9144-5e8e20689457"
 BMS_RX_UUID = "b1a50001-a00d-4692-9144-5e8e20689458"
 BMS_TX_UUID = "b1a50001-a00d-4692-9144-5e8e20689459"
 TELINK_OTA_UUID = "00010203-0405-0607-0809-0a0b0c0d2b12"
+TELINK_OTA_SERVICE_UUID = "00010203-0405-0607-0809-0a0b0c0d1912"
+BMS_GATT_FALLBACK_FRAGMENT = 20
 
 
 class BmsTransport(abc.ABC):
@@ -33,6 +35,7 @@ class BleakTransport(BmsTransport):
     def __init__(self) -> None:
         self._client = None
         self._notifications: asyncio.Queue[bytes] = asyncio.Queue()
+        self._ota_notifications: asyncio.Queue[bytes] = asyncio.Queue()
 
     @staticmethod
     async def scan(timeout_s: float = 5.0) -> list[tuple[str, str]]:
@@ -53,9 +56,13 @@ class BleakTransport(BmsTransport):
         self._client = BleakClient(address)
         await self._client.connect()
         await self._client.start_notify(BMS_TX_UUID, self._on_notification)
+        await self._client.start_notify(TELINK_OTA_UUID, self._on_ota_notification)
 
     def _on_notification(self, _: int, data: bytearray) -> None:
         self._notifications.put_nowait(bytes(data))
+
+    def _on_ota_notification(self, _: int, data: bytearray) -> None:
+        self._ota_notifications.put_nowait(bytes(data))
 
     async def disconnect(self) -> None:
         if self._client is not None:
@@ -68,8 +75,48 @@ class BleakTransport(BmsTransport):
             raise RuntimeError("尚未连接 BLE 设备")
         while not self._notifications.empty():
             self._notifications.get_nowait()
-        await self._client.write_gatt_char(BMS_RX_UUID, packet, response=False)
-        return [await asyncio.wait_for(self._notifications.get(), timeout_s)]
+        for offset in range(0, len(packet), BMS_GATT_FALLBACK_FRAGMENT):
+            await self._client.write_gatt_char(
+                BMS_RX_UUID, packet[offset:offset + BMS_GATT_FALLBACK_FRAGMENT], response=False
+            )
+
+        expected_sequence = struct.unpack_from("<H", packet, 4)[0]
+        expected_command = packet[6]
+        response_decoder = Decoder()
+        fragments: list[bytes] = []
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout_s
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise TimeoutError("等待完整 BMSLink 响应超时")
+            fragment = await asyncio.wait_for(self._notifications.get(), remaining)
+            fragments.append(fragment)
+            for frame in response_decoder.feed(fragment):
+                if frame.sequence == expected_sequence and frame.command == expected_command:
+                    return fragments
+
+    def clear_ota_notifications(self) -> None:
+        while not self._ota_notifications.empty():
+            self._ota_notifications.get_nowait()
+
+    async def ota_write(self, packet: bytes) -> None:
+        if self._client is None or not self._client.is_connected:
+            raise RuntimeError("尚未连接 BLE 设备")
+        if not 1 <= len(packet) <= BMS_GATT_FALLBACK_FRAGMENT:
+            raise ValueError("Telink OTA 写入长度必须为 1–20 字节")
+        await self._client.write_gatt_char(TELINK_OTA_UUID, packet, response=False)
+
+    async def wait_ota_result(self, timeout_s: float) -> int:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout_s
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise TimeoutError("等待 Telink OTA 结果通知超时")
+            notification = await asyncio.wait_for(self._ota_notifications.get(), remaining)
+            if len(notification) >= 3 and struct.unpack_from("<H", notification)[0] == 0xFF06:
+                return notification[2]
 
 
 class DemoTransport(BmsTransport):
@@ -128,5 +175,5 @@ class DemoTransport(BmsTransport):
         if command is Command.GET_EVENT_LOG:
             return Frame(request.sequence, command, b"\x00", FLAG_RESPONSE)
         if command is Command.OTA_INFO:
-            return Frame(request.sequence, command, bytes([1, 0, 15, 0]), FLAG_RESPONSE)
+            return Frame(request.sequence, command, bytes([0, 0, 180, 0]), FLAG_RESPONSE)
         return Frame(request.sequence, command, b"\x04", FLAG_RESPONSE | (1 << 2))

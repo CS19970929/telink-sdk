@@ -6,7 +6,7 @@
 
 一次 `SET_PARAMETERS` 可以包含 1–21 个条目，条目为 `ParameterId:u16 + Value:i32`。固件先在副本中应用所有写入，再同时校验边界和交叉约束，全部通过才替换当前参数，因而不会出现只写入半组保护阈值的状态。`GET_PARAMETERS` 每条返回 `Id:u16 + Type:u8 + Value:i32`，单帧最多 18 条；`GET_PARAMETER_SCHEMA` 每条返回 `Id:u16 + Type:u8 + Flags:u8 + Min:i32 + Max:i32 + Default:i32`，单帧最多 7 条。两者均可用 `StartId:u16 + Count:u8` 分页。
 
-写参数和设置 SOC 都要求固件注册了“已授权写入”回调。当前编译型板级外壳没有把未验证的 BLE 链路当作授权，因此默认拒绝写入；正式板级安全方案需要将该回调连接到完成配对和加密后的会话状态。
+写参数和设置 SOC 都要求固件注册了“已授权写入”回调。BLE 固件外壳按 SDK 外设 SMP 顺序启动 Bondable 的未认证配对加密；只有收到 `GAP_EVT_SMP_CONN_ENCRYPTION_DONE` 后，本连接才会通过此回调。连接建立、断开或配对失败均会清除授权。它避免把裸 GATT 写入误视为授权；量产前仍须审核 SMP Flash 扇区、配对 UX 以及是否需要 MITM/安全连接等级。
 
 `schema/bms_schema.yaml` 是供文档、PC/App 导入导出使用的版本化公开清单；MCU 不解析 YAML，仍使用静态描述表，避免引入动态解析器和堆内存。
 
