@@ -25,6 +25,9 @@ static BmsStatus sh36735_adapter_init(void *context)
         return BMS_STATUS_INVALID_ARGUMENT;
     }
 
+    if (adapter->configure_cell_count_on_init != 0u) {
+        return sh36735_set_series_cell_count(adapter->driver, adapter->cell_count);
+    }
     return sh36735_read_registers(adapter->driver, SH36735_REG_SCONF1,
                                   &system_configuration, 1u);
 }
@@ -32,40 +35,107 @@ static BmsStatus sh36735_adapter_init(void *context)
 static BmsStatus sh36735_adapter_read_measurement(void *context,
                                                    BmsMeasurement *measurement)
 {
-    (void)context;
-    (void)measurement;
+    Sh36735Adapter *adapter = (Sh36735Adapter *)context;
+    Sh36735RawSnapshot snapshot;
+    uint8_t index;
+    BmsStatus status;
 
-    /*
-     * The SPI register layer is available, but engineering conversion from
-     * VADC/CADC code to physical values needs the selected RSENSE and NTC
-     * curve. Do not publish guessed values into BmsRealtime.
-     */
-    return BMS_STATUS_NOT_READY;
+    if ((adapter == 0) || (adapter->driver == 0) || (measurement == 0) ||
+        (adapter->cell_voltage_from_code == 0) ||
+        ((adapter->temperature_count != 0u) && (adapter->temperature_from_code == 0))) {
+        return BMS_STATUS_NOT_READY;
+    }
+
+    status = sh36735_read_raw_snapshot(adapter->driver, adapter->cell_count,
+                                        adapter->temperature_count, &snapshot);
+    if (status != BMS_STATUS_OK) {
+        return status;
+    }
+
+    measurement->valid_flags = 0u;
+    measurement->cell_count = adapter->cell_count;
+    measurement->temperature_count = adapter->temperature_count;
+    measurement->pack_voltage_mv = 0u;
+    measurement->current_ma = 0;
+    measurement->charger_present = 0u;
+    measurement->load_present = 0u;
+    for (index = 0u; index < adapter->cell_count; ++index) {
+        status = adapter->cell_voltage_from_code(adapter->conversion_context, index,
+                                                 snapshot.cell_code[index],
+                                                 &measurement->cell_voltage_mv[index]);
+        if (status != BMS_STATUS_OK) {
+            return status;
+        }
+        measurement->pack_voltage_mv += measurement->cell_voltage_mv[index];
+    }
+    measurement->valid_flags |= BMS_MEASUREMENT_VALID_CELLS |
+                                BMS_MEASUREMENT_VALID_PACK_VOLTAGE;
+    for (index = 0u; index < adapter->temperature_count; ++index) {
+        status = adapter->temperature_from_code(adapter->conversion_context, index,
+                                                snapshot.temperature_code[index],
+                                                &measurement->temperature_decic[index]);
+        if (status != BMS_STATUS_OK) {
+            return status;
+        }
+    }
+    if (adapter->temperature_count != 0u) {
+        measurement->valid_flags |= BMS_MEASUREMENT_VALID_TEMPERATURES;
+    }
+    if (adapter->current_from_code != 0) {
+        status = adapter->current_from_code(adapter->conversion_context, snapshot.current_code,
+                                            &measurement->current_ma);
+        if (status != BMS_STATUS_OK) {
+            return status;
+        }
+        measurement->valid_flags |= BMS_MEASUREMENT_VALID_CURRENT;
+    }
+    if (adapter->charger_from_code != 0) {
+        status = adapter->charger_from_code(adapter->conversion_context,
+                                            snapshot.charger_voltage_code,
+                                            snapshot.bstatus2,
+                                            &measurement->charger_present);
+        if ((status != BMS_STATUS_OK) || (measurement->charger_present > 1u)) {
+            return (status == BMS_STATUS_OK) ? BMS_STATUS_PROTOCOL_ERROR : status;
+        }
+        measurement->valid_flags |= BMS_MEASUREMENT_VALID_CHARGER;
+    }
+    if (adapter->load_from_status != 0) {
+        status = adapter->load_from_status(adapter->conversion_context, snapshot.bstatus2,
+                                           &measurement->load_present);
+        if ((status != BMS_STATUS_OK) || (measurement->load_present > 1u)) {
+            return (status == BMS_STATUS_OK) ? BMS_STATUS_PROTOCOL_ERROR : status;
+        }
+        measurement->valid_flags |= BMS_MEASUREMENT_VALID_LOAD;
+    }
+    return BMS_STATUS_OK;
 }
 
 static BmsStatus sh36735_adapter_set_balance(void *context, uint32_t cell_mask)
 {
-    (void)context;
-    (void)cell_mask;
+    Sh36735Adapter *adapter = (Sh36735Adapter *)context;
+    uint32_t invalid_mask;
 
-    /*
-     * Balance duration, thermal constraints and the chip's 30.38 s automatic
-     * stop must be coordinated by the future Balance service.
-     */
-    return BMS_STATUS_NOT_READY;
+    if ((adapter == 0) || (adapter->driver == 0) || (adapter->allow_balance_control == 0u)) {
+        return BMS_STATUS_NOT_READY;
+    }
+    invalid_mask = ~(((uint32_t)1u << adapter->cell_count) - 1u);
+    if ((cell_mask & invalid_mask) != 0u) {
+        return BMS_STATUS_INVALID_ARGUMENT;
+    }
+    return sh36735_set_balance_mask(adapter->driver, cell_mask);
 }
 
 static BmsStatus sh36735_adapter_set_power(void *context,
                                            const BmsPowerCommand *command)
 {
-    (void)context;
-    (void)command;
-
-    /*
-     * Shared-port FET truth tables depend on the board-level high/low-side
-     * MOS topology, which is intentionally not encoded in the common AFE API.
-     */
-    return BMS_STATUS_NOT_READY;
+    Sh36735Adapter *adapter = (Sh36735Adapter *)context;
+    if ((adapter == 0) || (adapter->driver == 0) || (command == 0)) {
+        return BMS_STATUS_INVALID_ARGUMENT;
+    }
+    if (adapter->allow_power_control == 0u) {
+        return BMS_STATUS_NOT_READY;
+    }
+    return sh36735_set_power_command(adapter->driver, command);
 }
 
 static BmsStatus sh36735_adapter_get_faults(void *context,
@@ -128,9 +198,25 @@ static BmsStatus sh36735_adapter_get_faults(void *context,
 
 static BmsStatus sh36735_adapter_set_power_mode(void *context, AfePowerMode mode)
 {
-    (void)context;
-    (void)mode;
-    return BMS_STATUS_NOT_READY;
+    Sh36735Adapter *adapter = (Sh36735Adapter *)context;
+    uint8_t mode_value;
+
+    if ((adapter == 0) || (adapter->driver == 0)) {
+        return BMS_STATUS_INVALID_ARGUMENT;
+    }
+    if (adapter->allow_power_control == 0u) {
+        return BMS_STATUS_NOT_READY;
+    }
+    if (mode == AFE_POWER_MODE_NORMAL) {
+        mode_value = SH36735_SCONF1_NORMAL;
+    } else if (mode == AFE_POWER_MODE_IDLE) {
+        mode_value = SH36735_SCONF1_IDLE;
+    } else if (mode == AFE_POWER_MODE_SLEEP) {
+        mode_value = SH36735_SCONF1_SLEEP;
+    } else {
+        return BMS_STATUS_INVALID_ARGUMENT;
+    }
+    return sh36735_set_power_mode(adapter->driver, mode_value);
 }
 
 static const AfeOps g_sh36735_ops = {

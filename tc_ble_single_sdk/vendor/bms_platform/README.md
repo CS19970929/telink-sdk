@@ -6,7 +6,7 @@
 
 - 运行时数据模型：动态 cell_count/temperature_count、静态上限数组、统一单位和有效位；
 - AFE 边界：以采样、均衡、逻辑功率路径、硬件故障和低功耗能力抽象；
-- SH36735：仅实现 SPI/CRC/寄存器访问边界，尚未接入板级 SPI、RSENSE、NTC 曲线和 MOS 引脚；
+- SH36735：已实现 SPI/CRC、原始快照、串数、均衡、MOS、模式和故障事务；工程量换算与实际控制仍由板级回调和显式安全许可决定；
 - 目标工具链：Telink TC32 GCC 4.5.1-tc32-1.3，不使用 ARM GCC；
 - BMSLink v1、BLE/GATT、参数 Schema、基础保护/SOC/均衡/加热策略和官方 OTA 服务均已接入；实际硬件测量、标定和量产安全配置仍需板级验证。
 
@@ -33,4 +33,4 @@ build-core 只编译本平台的业务核心和 AFE 边界，作为快速 TC32 �
     docs/        架构、构建和决策记录
     tools/       独立 TC32/Cppcheck 入口
 
-详细边界见 docs/architecture.md、docs/build.md、docs/parameters.md 和 docs/pc_client.md。
+详细边界见 docs/architecture.md、docs/sh36735.md、docs/afe_replacement_review.md、docs/build.md、docs/parameters.md 和 docs/pc_client.md。

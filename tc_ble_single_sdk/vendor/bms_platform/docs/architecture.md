@@ -32,12 +32,14 @@
 
 SH36735 驱动已实现 SPI 模式 3 使用所需的帧级事务：读命令 `0x02`、写命令 `0x01`、软件复位 `0x0B BB CC`、CRC-8/0x07/初值 0，以及 ACK 和回显校验。传输函数由板级层注入，因而该驱动不依赖 Telink 寄存器。
 
-适配器已完成 FLAG1/FLAG2/FLAG3 的通用故障映射与通讯探测。以下 API 故意返回 `BMS_STATUS_NOT_READY`：物理量采样、均衡控制、功率控制和功耗模式。这是安全边界，不是缺失错误：这些行为必须等原理图、RSENSE、NTC 曲线、均衡热设计及同口 MOS 拓扑确认后实现。
+适配器已完成 FLAG1/FLAG2/FLAG3 的通用故障映射、ADC 原始快照和受控的模式/均衡/MOS 写入。`Sh36735RawSnapshot` 只停留在芯片层；板级回调把 ADC 码值换算为 `BmsMeasurement`。缺少单体标定、NTC/RSENSE 或检测策略时，适配器返回 `BMS_STATUS_NOT_READY` 或不置对应有效位，而不生成猜测值。
+
+均衡、功率路径和低功耗模式还受 `Sh36735Adapter` 的显式板级许可保护，默认全为禁用。即使芯片 Capability 存在，也不得在未完成原理图、热设计和台架验证前写实际控制寄存器。详细寄存器映射与接入顺序见 `docs/sh36735.md`，更换 AFE 的影响范围见 `docs/afe_replacement_review.md`。
 
 ## 后续接入顺序
 
 1. 确认 PCB 原理图与实测：SPI 引脚/片选、RSENSE、NTC、均衡回路、MOS 极性及驱动电平。
 2. 实现 TLSR8251 SPI 板级传输层并在实板验证 SH36735 帧、CRC 与寄存器读写。
-3. 完成 VADC/CADC/温度转换、硬件保护配置和受控均衡服务。
+3. 完成 VADC/CADC/温度换算回调、硬件保护配置和受控均衡服务。
 4. 在 `ble_sample` 最小化移植基础上接入 `BmsPlatform`、BMSLink 与独立的官方 OTA 服务。
 5. 建立带 `MCU_STARTUP_8251` 的完整镜像构建与刷写验证；不得沿用旧工程误配的 8258 启动项。
