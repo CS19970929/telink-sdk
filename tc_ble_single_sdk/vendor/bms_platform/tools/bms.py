@@ -319,6 +319,12 @@ def command_test(_: argparse.Namespace) -> None:
     result = subprocess.run(command, cwd=str(PROJECT_ROOT), env=environment, check=False)
     if result.returncode != 0:
         fail("协议测试失败，退出码为 {}".format(result.returncode))
+    pc_client_root = PROJECT_ROOT / "pc_client"
+    pc_command = [sys.executable, "-B", "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py"]
+    print("+ " + " ".join(pc_command))
+    result = subprocess.run(pc_command, cwd=str(pc_client_root), env=environment, check=False)
+    if result.returncode != 0:
+        fail("PC 客户端测试失败，退出码为 {}".format(result.returncode))
     print("协议测试通过。")
 
 

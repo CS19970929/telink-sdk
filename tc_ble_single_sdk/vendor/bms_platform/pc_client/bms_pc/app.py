@@ -1,0 +1,230 @@
+"""Tk desktop UI for BMSLink; run ``python -m bms_pc.app`` from pc_client."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from pathlib import Path
+import threading
+import tkinter as tk
+from tkinter import filedialog, messagebox, simpledialog, ttk
+
+from .client import BmsClient
+from .transport import BleakTransport, DemoTransport
+
+
+class AsyncRunner:
+    def __init__(self) -> None:
+        self.loop = asyncio.new_event_loop()
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
+
+    def _run(self) -> None:
+        asyncio.set_event_loop(self.loop)
+        self.loop.run_forever()
+
+    def call(self, coroutine):
+        return asyncio.run_coroutine_threadsafe(coroutine, self.loop).result()
+
+    def close(self) -> None:
+        self.loop.call_soon_threadsafe(self.loop.stop)
+        self.thread.join(timeout=1)
+
+
+class BmsDesktop:
+    def __init__(self, root: tk.Tk) -> None:
+        self.root = root
+        self.root.title("Telink BMS 上位机")
+        self.root.minsize(920, 600)
+        self.runner = AsyncRunner()
+        self.client: BmsClient | None = None
+        self._parameters: dict[int, int] = {}
+        self._build()
+        self.root.protocol("WM_DELETE_WINDOW", self.close)
+
+    def _build(self) -> None:
+        toolbar = ttk.Frame(self.root, padding=8)
+        toolbar.pack(fill=tk.X)
+        ttk.Label(toolbar, text="BLE 地址").pack(side=tk.LEFT)
+        self.address = tk.StringVar()
+        ttk.Entry(toolbar, textvariable=self.address, width=28).pack(side=tk.LEFT, padx=6)
+        ttk.Button(toolbar, text="扫描", command=self.scan).pack(side=tk.LEFT)
+        ttk.Button(toolbar, text="连接", command=self.connect).pack(side=tk.LEFT, padx=4)
+        ttk.Button(toolbar, text="演示设备", command=self.connect_demo).pack(side=tk.LEFT)
+        ttk.Button(toolbar, text="刷新", command=self.refresh).pack(side=tk.LEFT, padx=4)
+        self.status = tk.StringVar(value="未连接")
+        ttk.Label(toolbar, textvariable=self.status).pack(side=tk.RIGHT)
+
+        self.tabs = ttk.Notebook(self.root)
+        self.tabs.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 8))
+        self.dashboard = tk.Text(self.tabs, height=20, state=tk.DISABLED)
+        self.tabs.add(self.dashboard, text="仪表盘")
+        self.cells = self._table("单体电压", ("序号", "mV"))
+        self.temps = self._table("温度", ("序号", "0.1°C", "°C"))
+        self.parameters = self._table("参数（双击编辑；仅授权设备允许写入）", ("ID", "类型", "当前值"))
+        self.parameters.bind("<Double-1>", self.edit_parameter)
+        self.faults = self._table("保护 / 故障", ("类别", "位图（十六进制）"))
+        self.events = self._table("事件日志", ("时间 ms", "类型", "严重度", "变更前", "变更后"))
+        self.ota_text = tk.Text(self.tabs, height=12, state=tk.DISABLED)
+        ota_frame = ttk.Frame(self.tabs)
+        self.ota_text.pack(in_=ota_frame, fill=tk.BOTH, expand=True, padx=8, pady=8)
+        ttk.Button(ota_frame, text="校验 OTA 信息", command=self.show_ota).pack(pady=(0, 8))
+        self.tabs.add(ota_frame, text="OTA")
+
+        actions = ttk.Frame(self.root, padding=(8, 0, 8, 8))
+        actions.pack(fill=tk.X)
+        ttk.Button(actions, text="导出参数", command=self.export_parameters).pack(side=tk.LEFT)
+        ttk.Button(actions, text="导入并写入参数", command=self.import_parameters).pack(side=tk.LEFT, padx=6)
+        ttk.Label(actions, text="OTA 传输在板级 Flash 布局验收前被刻意禁用。").pack(side=tk.RIGHT)
+
+    def _table(self, title: str, columns: tuple[str, ...]) -> ttk.Treeview:
+        frame = ttk.Frame(self.tabs)
+        table = ttk.Treeview(frame, columns=columns, show="headings")
+        for column in columns:
+            table.heading(column, text=column)
+            table.column(column, width=140, anchor=tk.CENTER)
+        table.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+        self.tabs.add(frame, text=title)
+        return table
+
+    def _call(self, coroutine):
+        if self.client is None:
+            raise RuntimeError("请先连接设备")
+        return self.runner.call(coroutine)
+
+    def connect_demo(self) -> None:
+        self._connect(BmsClient(DemoTransport()), None, "已连接演示设备")
+
+    def connect(self) -> None:
+        address = self.address.get().strip()
+        if not address:
+            messagebox.showwarning("缺少地址", "请先扫描或输入 BLE 地址。")
+            return
+        self._connect(BmsClient(BleakTransport()), address, f"已连接 {address}")
+
+    def _connect(self, client: BmsClient, address: str | None, text: str) -> None:
+        try:
+            self.runner.call(client.connect(address))
+            self.client = client
+            self.status.set(text)
+            self.refresh()
+        except Exception as error:
+            messagebox.showerror("连接失败", str(error))
+
+    def scan(self) -> None:
+        try:
+            devices = self.runner.call(BleakTransport.scan())
+            if not devices:
+                messagebox.showinfo("扫描", "未发现 BLE 设备。")
+                return
+            choices = "\n".join(f"{address}  {name}" for address, name in devices)
+            selected = simpledialog.askstring("扫描结果", f"请输入要连接的地址：\n{choices}")
+            if selected:
+                self.address.set(selected.strip())
+        except Exception as error:
+            messagebox.showerror("扫描失败", str(error))
+
+    @staticmethod
+    def _replace(table: ttk.Treeview, rows: list[tuple]) -> None:
+        for item in table.get_children():
+            table.delete(item)
+        for row in rows:
+            table.insert("", tk.END, values=row)
+
+    def refresh(self) -> None:
+        try:
+            info = self._call(self.client.device_info())
+            realtime = self._call(self.client.realtime())
+            parameters = self._call(self.client.all_parameters())
+            alarms, protections, faults = self._call(self.client.faults())
+            events = self._call(self.client.events())
+            self._parameters = {item.parameter_id: item.value for item in parameters}
+            summary = (
+                f"固件: {info.firmware[0]}.{info.firmware[1]}.{info.firmware[2]}\n"
+                f"MCU: TLSR825{info.mcu - 0x50}    AFE 类型: {info.afe_kind}\n"
+                f"串数 / 温度: {info.cell_count}S / {info.temperature_count}\n\n"
+                f"总压: {realtime.pack_voltage_mv} mV\n电流: {realtime.current_ma} mA\n"
+                f"功率: {realtime.power_mw} mW\nSOC: {realtime.soc_permil / 10:.1f}%\n"
+                f"SOH: {realtime.soh_permil / 10:.1f}%\n压差: {realtime.cell_delta_mv} mV\n"
+                f"均衡掩码: 0x{realtime.balance_mask:08X}"
+            )
+            self.dashboard.configure(state=tk.NORMAL); self.dashboard.delete("1.0", tk.END)
+            self.dashboard.insert(tk.END, summary); self.dashboard.configure(state=tk.DISABLED)
+            self._replace(self.cells, [(index + 1, value) for index, value in enumerate(realtime.cells_mv)])
+            self._replace(self.temps, [(index + 1, value, f"{value / 10:.1f}")
+                                       for index, value in enumerate(realtime.temperatures_decic)])
+            self._replace(self.parameters, [(f"0x{item.parameter_id:04X}", item.type, item.value)
+                                             for item in parameters])
+            self._replace(self.faults, [("报警", f"0x{alarms:08X}"), ("保护", f"0x{protections:08X}"),
+                                        ("故障", f"0x{faults:08X}")])
+            self._replace(self.events, [(item.timestamp_ms, item.type, item.severity, item.before, item.after)
+                                        for item in events])
+        except Exception as error:
+            messagebox.showerror("刷新失败", str(error))
+
+    def edit_parameter(self, _: tk.Event) -> None:
+        selected = self.parameters.selection()
+        if not selected:
+            return
+        values = self.parameters.item(selected[0], "values")
+        parameter_id = int(values[0], 16)
+        value = simpledialog.askinteger("写入参数", f"参数 {values[0]} 的新值", initialvalue=int(values[2]))
+        if value is None:
+            return
+        try:
+            self._call(self.client.set_parameters({parameter_id: value}))
+            self.refresh()
+        except Exception as error:
+            messagebox.showerror("写入失败", str(error))
+
+    def export_parameters(self) -> None:
+        if not self._parameters:
+            messagebox.showwarning("没有参数", "请先刷新参数。")
+            return
+        path = filedialog.asksaveasfilename(defaultextension=".json", filetypes=[("JSON", "*.json")])
+        if path:
+            Path(path).write_text(json.dumps({f"0x{key:04X}": value for key, value in self._parameters.items()}, indent=2), encoding="utf-8")
+
+    def import_parameters(self) -> None:
+        path = filedialog.askopenfilename(filetypes=[("JSON", "*.json")])
+        if not path:
+            return
+        try:
+            source = json.loads(Path(path).read_text(encoding="utf-8"))
+            values = {int(key, 0): int(value) for key, value in source.items()}
+            self._call(self.client.set_parameters(values))
+            self.refresh()
+        except Exception as error:
+            messagebox.showerror("导入/写入失败", str(error))
+
+    def show_ota(self) -> None:
+        try:
+            available, layout_approved, timeout = self._call(self.client.ota_info())
+            content = (f"官方 Telink OTA 服务: {'可用' if available else '不可用'}\n"
+                       f"板级 Flash 布局已批准: {'是' if layout_approved else '否'}\n"
+                       f"服务端超时: {timeout} 秒\n\n"
+                       "为避免对未知 Flash 布局刷写，当前上位机仅提供 OTA 状态检查；"
+                       "在完成目标板分区、断电恢复和升级回归验证后，再启用正式传输入口。")
+            self.ota_text.configure(state=tk.NORMAL); self.ota_text.delete("1.0", tk.END)
+            self.ota_text.insert(tk.END, content); self.ota_text.configure(state=tk.DISABLED)
+        except Exception as error:
+            messagebox.showerror("OTA 查询失败", str(error))
+
+    def close(self) -> None:
+        if self.client is not None:
+            try:
+                self.runner.call(self.client.disconnect())
+            except Exception:
+                pass
+        self.runner.close()
+        self.root.destroy()
+
+
+def main() -> None:
+    root = tk.Tk()
+    BmsDesktop(root)
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()

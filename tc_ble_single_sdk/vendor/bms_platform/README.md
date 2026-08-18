@@ -29,7 +29,8 @@ build-core 只编译本平台的业务核心和 AFE 边界，作为快速 TC32 �
     afe/         通用 AFE 接口与芯片实现
     include/     对内稳定头文件
     schema/      PC/App 使用的版本化参数公开清单
+    pc_client/   Tk 桌面上位机、CLI、BMSLink/BLE Transport
     docs/        架构、构建和决策记录
     tools/       独立 TC32/Cppcheck 入口
 
-详细边界见 docs/architecture.md 和 docs/build.md。
+详细边界见 docs/architecture.md、docs/build.md、docs/parameters.md 和 docs/pc_client.md。

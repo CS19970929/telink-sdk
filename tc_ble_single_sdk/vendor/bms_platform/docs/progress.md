@@ -13,7 +13,7 @@
 | Protection / SOC / Balance / Heating | 已完成（编译级） | 通用保护、基础 SOC、均衡/加热请求与同口安全规则已接入业务层；实际标定与驱动待硬件。 |
 | 配置存储、事件、诊断 | 部分完成 | 双槽 CRC 存储抽象、RAM 事件环形日志和 BMSLink 查询已完成；板级 Flash 与持久化历史待布局确认。 |
 | 官方 OTA 集成 | 已完成（编译级） | 已注册官方 OTA 服务和回调；Flash 分区与断电恢复尚待实机验证。 |
-| PC 上位机 | 未开始 | 将使用 BMSLink Python 客户端和 BLE Transport。 |
+| PC 上位机 | 已完成（演示/通信级） | Tk Dashboard、Cells、Temperature、参数导入导出、故障/事件、CLI、DemoTransport 与可选 Bleak 实机传输均已实现并有离线测试；真实 BLE/授权写入需硬件验证。 |
 | 移动 App | 未开始 | 协议与参数稳定后实施。 |
 
 ## 硬件待确认项

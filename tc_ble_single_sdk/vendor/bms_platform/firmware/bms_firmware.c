@@ -107,7 +107,7 @@ static BmsStatus bms_firmware_write_realtime(const BmsLinkFrame *request)
     bms_firmware_prepare_response(request, &response);
     bms_firmware_write_u32(&response.payload[offset], realtime->valid_flags); offset += 4u;
     bms_firmware_write_u32(&response.payload[offset], realtime->timestamp_ms); offset += 4u;
-    bms_firmware_write_u16(&response.payload[offset], realtime->pack_voltage_mv); offset += 2u;
+    bms_firmware_write_u32(&response.payload[offset], realtime->pack_voltage_mv); offset += 4u;
     bms_firmware_write_u32(&response.payload[offset], (uint32_t)realtime->current_ma); offset += 4u;
     bms_firmware_write_u32(&response.payload[offset], (uint32_t)realtime->power_mw); offset += 4u;
     bms_firmware_write_u16(&response.payload[offset], realtime->soc_permil); offset += 2u;
@@ -120,9 +120,6 @@ static BmsStatus bms_firmware_write_realtime(const BmsLinkFrame *request)
     for (index = 0u; index < realtime->temperature_count; ++index) {
         bms_firmware_write_u16(&response.payload[offset], (uint16_t)realtime->temperature_decic[index]); offset += 2u;
     }
-    bms_firmware_write_u16(&response.payload[offset], realtime->cell_min_mv); offset += 2u;
-    bms_firmware_write_u16(&response.payload[offset], realtime->cell_max_mv); offset += 2u;
-    bms_firmware_write_u16(&response.payload[offset], realtime->cell_delta_mv); offset += 2u;
     bms_firmware_write_u32(&response.payload[offset], realtime->balance_cells_mask); offset += 4u;
     bms_firmware_write_u32(&response.payload[offset], realtime->alarm_flags); offset += 4u;
     bms_firmware_write_u32(&response.payload[offset], realtime->protection_flags); offset += 4u;

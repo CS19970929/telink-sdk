@@ -40,6 +40,8 @@ BMSLink 是 BMS 的业务帧协议，与 BLE GATT、UART、RS485、CAN 的报文
 
 `GET_PARAMETERS` 和 `GET_PARAMETER_SCHEMA` 的请求为空，或为 `StartId:u16, Count:u8`；响应首字节是实际条目数。参数项为 `Id:u16, Type:u8, Value:i32`；Schema 项为 `Id:u16, Type:u8, Flags:u8, Min:i32, Max:i32, Default:i32`。所有整数仍为小端。`SET_PARAMETERS` 的请求由连续 `Id:u16, Value:i32` 组成，固件原子校验并应用整批写入，成功响应为写入条数。
 
+`GET_REALTIME` 固定前缀为 `ValidFlags:u32, TimestampMs:u32, PackVoltageMv:u32, CurrentMa:i32, PowerMw:i32, SocPermil:u16, SohPermil:u16, CellCount:u8, TemperatureCount:u8`，随后是单体 `u16[]`、温度 `i16[]`、`BalanceMask:u32, Alarm:u32, Protection:u32, Fault:u32, State:u8`。总压必须为 `u32`（20S 满充电压可以超过 65.535V）。单体最小/最大/压差保留在固件模型中，客户端由单体数组计算，以便最大的 32S/8 温度快照仍不超过 BMSLink 的 128 字节上限。
+
 `CONTROL` 当前只定义子命令 `0x01`（`SET_SOC_PERMIL`，载荷为 `0x01 + Soc:u16`）；不定义远程直接开关 MOS 的通用命令。参数写入和控制必须经过已授权的安全会话。`GET_EVENT_LOG` 请求为空或 `Start:u8, Count:u8`，每条事件为 `TimestampMs:u32, Type:u8, Severity:u8, Before:u32, After:u32`。`OTA_INFO` 只说明官方 OTA 服务是否存在，实际镜像传输走 Telink OTA Service，不走 BMSLink。
 
 ## 固定测试向量

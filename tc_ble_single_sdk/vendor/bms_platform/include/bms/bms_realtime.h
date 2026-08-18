@@ -18,7 +18,7 @@ typedef struct {
     uint8_t temperature_count;
     uint16_t cell_voltage_mv[BMS_MAX_CELLS];
     int16_t temperature_decic[BMS_MAX_TEMPERATURES];
-    uint16_t pack_voltage_mv;
+    uint32_t pack_voltage_mv;
     int32_t current_ma;
     uint8_t charger_present;
     uint8_t load_present;
@@ -32,7 +32,7 @@ typedef struct {
     uint8_t temperature_count;
     uint16_t cell_voltage_mv[BMS_MAX_CELLS];
     int16_t temperature_decic[BMS_MAX_TEMPERATURES];
-    uint16_t pack_voltage_mv;
+    uint32_t pack_voltage_mv;
     int32_t current_ma;
     int32_t power_mw;
     uint16_t soc_permil;
