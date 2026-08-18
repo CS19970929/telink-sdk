@@ -6,6 +6,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
+import tempfile
 import subprocess
 import sys
 from pathlib import Path
@@ -15,6 +17,7 @@ from typing import Iterable
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SDK_ROOT = PROJECT_ROOT.parents[1]
 BUILD_ROOT = PROJECT_ROOT / "build"
+PC_CLIENT_ROOT = PROJECT_ROOT / "pc_client"
 TC32_GCC = Path("C:/TelinkIoTStudio/opt/tc32/bin/tc32-elf-gcc.exe")
 TC32_OBJCOPY = Path("C:/TelinkIoTStudio/opt/tc32/bin/tc32-elf-objcopy.exe")
 TC32_SIZE = Path("C:/TelinkIoTStudio/opt/tc32/bin/tc32-elf-size.exe")
@@ -302,6 +305,54 @@ def command_build_lab_ota_firmware(_: argparse.Namespace) -> None:
         "BMS_LAB_SIMULATOR_ENABLE=1", "BMS_LAB_OTA_ENABLE=1"))
 
 
+def command_build_pc_exe(_: argparse.Namespace) -> None:
+    entry_point = PC_CLIENT_ROOT / "run_gui.py"
+    require_file(entry_point, "PC 上位机图形入口")
+    output_root = BUILD_ROOT / "pc_client"
+    output_root.mkdir(parents=True, exist_ok=True)
+    temporary_base = Path(os.environ.get("LOCALAPPDATA", tempfile.gettempdir()))
+    temporary_base = temporary_base / "CodexTemp" / "bms_platform" / "pyinstaller"
+    temporary_base.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="build-pc-exe-", dir=temporary_base) as temporary_directory:
+        temporary_root = Path(temporary_directory)
+        run([
+            sys.executable,
+            "-m",
+            "PyInstaller",
+            "--noconfirm",
+            "--clean",
+            "--windowed",
+            "--onefile",
+            "--name",
+            "TelinkBMS",
+            "--paths",
+            str(PC_CLIENT_ROOT),
+            "--collect-all",
+            "bleak",
+            "--collect-all",
+            "winrt",
+            "--distpath",
+            str(output_root),
+            "--workpath",
+            str(temporary_root / "work"),
+            "--specpath",
+            str(temporary_root / "spec"),
+            str(entry_point),
+        ])
+    executable_path = output_root / "TelinkBMS.exe"
+    require_file(executable_path, "PC 上位机 EXE")
+    manifest_path = output_root / "build_manifest.json"
+    manifest_path.write_text(json.dumps({
+        "target": "telink-bms-pc-client",
+        "entry_point": "pc_client/run_gui.py",
+        "output": executable_path.name,
+        "python": sys.version,
+        "sha256": sha256(executable_path),
+        "packaging": "PyInstaller onefile windowed; Bleak and WinRT collected",
+    }, indent=2) + "\n", encoding="utf-8")
+    print("已生成可双击运行的 Windows 上位机: {}".format(executable_path))
+
+
 def command_static(_: argparse.Namespace) -> None:
     require_file(CPPCHECK, "Cppcheck")
     sources = source_files()
@@ -355,6 +406,7 @@ def create_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("build-firmware", help="构建并检查 TLSR8251 BLE 固件").set_defaults(handler=command_build_firmware)
     subparsers.add_parser("build-lab-firmware", help="构建不访问 AFE/GPIO 的 BLE 通信模拟固件").set_defaults(handler=command_build_lab_firmware)
     subparsers.add_parser("build-lab-ota-firmware", help="构建官方开发板专用的模拟数据 + OTA 实验固件").set_defaults(handler=command_build_lab_ota_firmware)
+    subparsers.add_parser("build-pc-exe", help="生成可双击运行的 Windows 上位机 EXE").set_defaults(handler=command_build_pc_exe)
     subparsers.add_parser("static", help="对 BMS 自有源码运行 Cppcheck").set_defaults(handler=command_static)
     subparsers.add_parser("test", help="运行不依赖硬件的协议测试").set_defaults(handler=command_test)
     return parser

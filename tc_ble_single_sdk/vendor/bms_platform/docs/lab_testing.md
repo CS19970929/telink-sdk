@@ -10,6 +10,10 @@
 
 产物为 `build/lab_firmware/telink_bms.bin`。下载到官方 TLSR8251 开发板后，设备应广播名称 `Telink BMS`，扫描响应包含 `BMSLink`。模拟器每 500 ms 发布 20S、4 路温度、约 74 V 总压和在 +1200 mA / -800 mA 间切换的电流。数值仅用于验证显示、单位、分片、SOC、保护、均衡请求、事件和参数回读；不是 AFE 标定值。
 
+### GPIO_PD4
+
+本项目的实验室镜像和生产镜像都没有引用 `GPIO_PD4`，也没有对它调用 `gpio_set_func`、`gpio_set_input_en`、`gpio_set_output_en`、`gpio_write` 或上下拉配置。因此 PD4 不承担 AFE、MOS、状态指示或 BLE 通信功能，应用层不会改变它的电平。SDK 对 TLSR825x 的定义为 Port D 的 bit4；复位后的电气状态及开发板是否接有 LED 取决于芯片和具体开发板版本，不能把它当成稳定高/低电平使用。需要指示灯或外部信号时，必须在已确认的原理图基础上单独增加板级配置。
+
 ## PC 验证顺序
 
     cd pc_client

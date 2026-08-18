@@ -18,6 +18,16 @@
     python -m bms_pc.cli --demo realtime
     python -m bms_pc.app
 
+## Windows 可执行上位机
+
+仓库可直接交付单文件、无控制台窗口的 Windows 上位机。已构建的文件位于 `build/pc_client/TelinkBMS.exe`，双击即可打开，不需要输入 Python 命令或安装 Python。它首次启动时由 Windows 自动申请蓝牙权限；扫描、连接、参数、日志和 OTA 页面与 Python GUI 相同。
+
+可复现构建入口为项目根目录的：
+
+    python tools/bms.py build-pc-exe
+
+该命令使用 `pc_client/requirements-build.txt` 中固定范围的 PyInstaller，生成 `build/pc_client/TelinkBMS.exe` 与 SHA-256 清单。PyInstaller 工作目录和 spec 文件放在 Windows 用户临时区，不写入 Git 工作树。
+
 首次连接真实 Windows BLE 设备前安装可选依赖：
 
     python -m pip install -r requirements.txt
