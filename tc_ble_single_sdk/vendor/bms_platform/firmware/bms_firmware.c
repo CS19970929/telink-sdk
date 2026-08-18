@@ -388,6 +388,37 @@ BmsStatus bms_firmware_receive(const uint8_t *data, uint16_t length)
     return BMS_STATUS_OK;
 }
 
+BmsStatus bms_firmware_publish_measurement(const BmsMeasurement *measurement)
+{
+    BmsStatus status;
+    uint32_t elapsed_ms;
+    if (measurement == 0) {
+        return BMS_STATUS_INVALID_ARGUMENT;
+    }
+    if ((measurement->cell_count != g_bms_firmware.application.product.cell_count) ||
+        (measurement->temperature_count != g_bms_firmware.application.product.temperature_count)) {
+        return BMS_STATUS_PROTOCOL_ERROR;
+    }
+    elapsed_ms = (g_bms_firmware.realtime.sample_sequence == 0u) ? 0u :
+                 (uint32_t)(measurement->timestamp_ms - g_bms_firmware.realtime.timestamp_ms);
+    status = bms_realtime_publish_measurement(&g_bms_firmware.realtime, measurement);
+    if (status != BMS_STATUS_OK) {
+        return status;
+    }
+    bms_application_step(&g_bms_firmware.application, &g_bms_firmware.realtime, elapsed_ms);
+    g_bms_firmware.realtime.balance_cells_mask =
+        g_bms_firmware.application.output.desired_balance_mask;
+    g_bms_firmware.realtime.heating_requested =
+        g_bms_firmware.application.output.heating_requested;
+    g_bms_firmware.realtime.power_state.charge_enabled =
+        g_bms_firmware.application.output.desired_power.charge_enabled;
+    g_bms_firmware.realtime.power_state.discharge_enabled =
+        g_bms_firmware.application.output.desired_power.discharge_enabled;
+    g_bms_firmware.realtime.power_state.precharge_enabled =
+        g_bms_firmware.application.output.desired_power.precharge_enabled;
+    return BMS_STATUS_OK;
+}
+
 const BmsRealtime *bms_firmware_realtime(void)
 {
     return &g_bms_firmware.realtime;

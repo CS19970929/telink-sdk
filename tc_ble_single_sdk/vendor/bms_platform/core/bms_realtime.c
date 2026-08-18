@@ -110,8 +110,17 @@ BmsStatus bms_realtime_publish_measurement(BmsRealtime *realtime,
     if ((measurement->valid_flags & (BMS_MEASUREMENT_VALID_PACK_VOLTAGE |
                                      BMS_MEASUREMENT_VALID_CURRENT)) ==
         (BMS_MEASUREMENT_VALID_PACK_VOLTAGE | BMS_MEASUREMENT_VALID_CURRENT)) {
-        realtime->power_mw = (int32_t)(((int64_t)realtime->pack_voltage_mv *
-                                         (int64_t)realtime->current_ma) / 1000);
+        /*
+         * Keep this in TC32-supported 32-bit arithmetic. Splitting the mV
+         * factor preserves mW units without pulling in 64-bit libgcc helpers.
+         */
+        int32_t current_amps = realtime->current_ma / 1000;
+        int32_t current_remainder = realtime->current_ma % 1000;
+        int32_t voltage_volts = (int32_t)(realtime->pack_voltage_mv / 1000u);
+        int32_t voltage_remainder = (int32_t)(realtime->pack_voltage_mv % 1000u);
+        realtime->power_mw = voltage_volts * realtime->current_ma +
+                             voltage_remainder * current_amps +
+                             (voltage_remainder * current_remainder) / 1000;
     } else {
         realtime->power_mw = 0;
     }

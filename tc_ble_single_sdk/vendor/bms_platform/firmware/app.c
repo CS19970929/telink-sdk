@@ -5,6 +5,7 @@
 #include "app.h"
 #include "bms_firmware.h"
 #include "bms_gatt.h"
+#include "bms_lab_simulator.h"
 
 #define BMS_RX_FIFO_SIZE                 (64u)
 #define BMS_RX_FIFO_NUM                  (8u)
@@ -121,6 +122,9 @@ void user_init_normal(void)
 
     bms_firmware_init(bms_gatt_transmit, 0);
     bms_firmware_set_write_authorizer(bms_app_write_is_authorized, 0);
+#if (BMS_LAB_SIMULATOR_ENABLE)
+    bms_lab_simulator_init();
+#endif
     bls_ll_setAdvData((u8 *)g_advertising_data, sizeof(g_advertising_data));
     bls_ll_setScanRspData((u8 *)g_scan_response, sizeof(g_scan_response));
     advertising_status = bls_ll_setAdvParam(BMS_ADV_INTERVAL_MIN, BMS_ADV_INTERVAL_MAX,
@@ -144,5 +148,8 @@ void user_init_deepRetn(void)
 void main_loop(void)
 {
     blt_sdk_main_loop();
+#if (BMS_LAB_SIMULATOR_ENABLE)
+    bms_lab_simulator_process(clock_time() / CLOCK_SYS_CLOCK_1MS);
+#endif
     bms_gatt_process();
 }

@@ -46,6 +46,7 @@ FIRMWARE_OWNED_SOURCES = (
     Path("firmware/app.c"),
     Path("firmware/bms_firmware.c"),
     Path("firmware/bms_gatt.c"),
+    Path("firmware/bms_lab_simulator.c"),
     Path("firmware/main.c"),
 )
 FIRMWARE_SDK_SOURCE_ROOTS = (
@@ -123,7 +124,8 @@ def compiler_command(source: Path, output: Path) -> list[str]:
     ]
 
 
-def firmware_compiler_command(source: Path, output: Path) -> list[str]:
+def firmware_compiler_command(source: Path, output: Path,
+                              defines: tuple[str, ...] = ()) -> list[str]:
     command = compiler_command(source, output)
     if not source.is_relative_to(PROJECT_ROOT):
         command.remove("-Werror")
@@ -132,6 +134,8 @@ def firmware_compiler_command(source: Path, output: Path) -> list[str]:
     command.insert(command.index("-c"), "-include")
     command.insert(command.index("-c"), str(PROJECT_ROOT / "firmware" / "app_config.h"))
     command.insert(command.index("-c"), "-I" + str(PROJECT_ROOT / "firmware"))
+    for define in defines:
+        command.insert(command.index("-include"), "-D" + define)
     return command
 
 
@@ -207,7 +211,7 @@ def command_build_core(_: argparse.Namespace) -> None:
     print("清单: {}".format(manifest_path))
 
 
-def command_build_firmware(_: argparse.Namespace) -> None:
+def build_firmware(output_name: str, profile: str, defines: tuple[str, ...]) -> None:
     require_file(TC32_GCC, "TC32 编译器")
     require_file(TC32_OBJCOPY, "TC32 Objcopy")
     require_file(TC32_SIZE, "TC32 Size")
@@ -216,14 +220,14 @@ def command_build_firmware(_: argparse.Namespace) -> None:
     require_file(FIRMWARE_LINK_SCRIPT, "TLSR825x 链接脚本")
     require_file(SDK_ROOT / "proj_lib" / "liblt_825x.a", "TLSR825x 协议栈库")
 
-    output_root = BUILD_ROOT / "firmware"
+    output_root = BUILD_ROOT / output_name
     object_root = output_root / "obj"
     object_root.mkdir(parents=True, exist_ok=True)
     objects: list[Path] = []
     for source in firmware_sources():
         output = firmware_object_path(source, object_root)
         output.parent.mkdir(parents=True, exist_ok=True)
-        run(firmware_compiler_command(source, output))
+        run(firmware_compiler_command(source, output, defines))
         objects.append(output)
 
     startup_object = object_root / "startup" / "cstartup_825x.o"
@@ -264,6 +268,8 @@ def command_build_firmware(_: argparse.Namespace) -> None:
 
     manifest = {
         "target": "tlsr8251-bms-firmware",
+        "profile": profile,
+        "defines": list(defines),
         "startup_define": "MCU_STARTUP_8251=1",
         "startup": str(FIRMWARE_STARTUP.relative_to(SDK_ROOT)),
         "runtime_assembly": str(FIRMWARE_DIV_MOD.relative_to(SDK_ROOT)),
@@ -280,7 +286,20 @@ def command_build_firmware(_: argparse.Namespace) -> None:
     }
     manifest_path = output_root / "build_manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-    print("已生成可检查的 TLSR8251 固件: {}".format(binary_path))
+    print("已生成可检查的 TLSR8251 {}固件: {}".format(profile, binary_path))
+
+
+def command_build_firmware(_: argparse.Namespace) -> None:
+    build_firmware("firmware", "production", ())
+
+
+def command_build_lab_firmware(_: argparse.Namespace) -> None:
+    build_firmware("lab_firmware", "afe-simulator", ("BMS_LAB_SIMULATOR_ENABLE=1",))
+
+
+def command_build_lab_ota_firmware(_: argparse.Namespace) -> None:
+    build_firmware("lab_ota_firmware", "afe-simulator-ota", (
+        "BMS_LAB_SIMULATOR_ENABLE=1", "BMS_LAB_OTA_ENABLE=1"))
 
 
 def command_static(_: argparse.Namespace) -> None:
@@ -334,6 +353,8 @@ def create_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("env", help="验证固定工具链与 SDK 依赖").set_defaults(handler=command_env)
     subparsers.add_parser("build-core", help="仅编译 BMS 自有 C 源码").set_defaults(handler=command_build_core)
     subparsers.add_parser("build-firmware", help="构建并检查 TLSR8251 BLE 固件").set_defaults(handler=command_build_firmware)
+    subparsers.add_parser("build-lab-firmware", help="构建不访问 AFE/GPIO 的 BLE 通信模拟固件").set_defaults(handler=command_build_lab_firmware)
+    subparsers.add_parser("build-lab-ota-firmware", help="构建官方开发板专用的模拟数据 + OTA 实验固件").set_defaults(handler=command_build_lab_ota_firmware)
     subparsers.add_parser("static", help="对 BMS 自有源码运行 Cppcheck").set_defaults(handler=command_static)
     subparsers.add_parser("test", help="运行不依赖硬件的协议测试").set_defaults(handler=command_test)
     return parser

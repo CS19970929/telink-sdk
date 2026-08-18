@@ -17,10 +17,13 @@
     python tools/bms.py env
     python tools/bms.py build-core
     python tools/bms.py build-firmware
+    python tools/bms.py build-lab-firmware
     python tools/bms.py static
     python tools/bms.py test
 
 build-core 只编译本平台的业务核心和 AFE 边界，作为快速 TC32 语法与警告门禁。build-firmware 构建 BMS 自有 BLE 外壳、SDK 公共运行时、`MCU_STARTUP_8251` 启动文件和 825x 协议栈，并执行 SDK 固件检查；它仍须经过实机验证后才可刷写到产品板。
+
+没有 AFE 时，可用官方 TLSR8251 开发板执行 `build-lab-firmware`，得到不触碰 AFE/SPI/MOS 的确定性模拟数据 BLE 验证镜像；需要测试 OTA 时另用受 Flash 容量条件保护的 `build-lab-ota-firmware`。完整流程见 `docs/lab_testing.md`。
 
 ## 目录
 
@@ -34,4 +37,4 @@ build-core 只编译本平台的业务核心和 AFE 边界，作为快速 TC32 �
     docs/        架构、构建和决策记录
     tools/       独立 TC32/Cppcheck 入口
 
-详细边界见 docs/architecture.md、docs/sh36735.md、docs/afe_replacement_review.md、docs/build.md、docs/parameters.md、docs/pc_client.md 和 docs/mobile_app.md。
+详细边界见 docs/architecture.md、docs/sh36735.md、docs/afe_replacement_review.md、docs/build.md、docs/lab_testing.md、docs/parameters.md、docs/pc_client.md 和 docs/mobile_app.md。
