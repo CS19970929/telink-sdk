@@ -43,40 +43,64 @@ static const u8 g_scan_response[] = {
 };
 
 #if (BMS_LAB_CONFIG_FLASH_ENABLE)
+/* Keep the laboratory control path RAM-only until board Flash is approved. */
+static uint8_t g_bms_lab_config_slots[BMS_CONFIG_REQUIRED_SLOTS][BMS_CONFIG_SLOT_SIZE];
+
+static int bms_app_config_slot_index(uint32_t address)
+{
+    if (address == BMS_LAB_CONFIG_SLOT0_ADDRESS) {
+        return 0;
+    }
+    if (address == BMS_LAB_CONFIG_SLOT1_ADDRESS) {
+        return 1;
+    }
+    return -1;
+}
+
 static BmsStatus bms_app_config_flash_read(void *context, uint32_t address,
                                            uint8_t *data, uint16_t length)
 {
+    int slot;
+    uint16_t index;
     (void)context;
-    if ((data == 0) || ((address != BMS_LAB_CONFIG_SLOT0_ADDRESS) &&
-                        (address != BMS_LAB_CONFIG_SLOT1_ADDRESS)) ||
-        (length > BMS_CONFIG_SLOT_SIZE)) {
+    slot = bms_app_config_slot_index(address);
+    if ((data == 0) || (slot < 0) || (length > BMS_CONFIG_SLOT_SIZE)) {
         return BMS_STATUS_INVALID_ARGUMENT;
     }
-    flash_read_page(address, length, data);
+    for (index = 0u; index < length; ++index) {
+        data[index] = g_bms_lab_config_slots[slot][index];
+    }
     return BMS_STATUS_OK;
 }
 
 static BmsStatus bms_app_config_flash_erase(void *context, uint32_t address, uint16_t length)
 {
+    int slot;
+    uint16_t index;
     (void)context;
-    if (((address != BMS_LAB_CONFIG_SLOT0_ADDRESS) &&
-         (address != BMS_LAB_CONFIG_SLOT1_ADDRESS)) || (length != BMS_FLASH_SECTOR_SIZE)) {
+    slot = bms_app_config_slot_index(address);
+    if ((slot < 0) || (length != BMS_FLASH_SECTOR_SIZE)) {
         return BMS_STATUS_INVALID_ARGUMENT;
     }
-    flash_erase_sector(address);
+    for (index = 0u; index < BMS_CONFIG_SLOT_SIZE; ++index) {
+        g_bms_lab_config_slots[slot][index] = 0xffu;
+    }
     return BMS_STATUS_OK;
 }
 
 static BmsStatus bms_app_config_flash_write(void *context, uint32_t address,
                                             const uint8_t *data, uint16_t length)
 {
+    int slot;
+    uint16_t index;
     (void)context;
-    if ((data == 0) || ((address != BMS_LAB_CONFIG_SLOT0_ADDRESS) &&
-                        (address != BMS_LAB_CONFIG_SLOT1_ADDRESS)) ||
-        (length > BMS_CONFIG_SLOT_SIZE)) {
+    slot = bms_app_config_slot_index(address);
+    if ((data == 0) || (slot < 0) || (length > BMS_CONFIG_SLOT_SIZE)) {
         return BMS_STATUS_INVALID_ARGUMENT;
     }
-    flash_write_page(address, length, (uint8_t *)data);
+    for (index = 0u; index < length; ++index) {
+        g_bms_lab_config_slots[slot][index] = data[index];
+    }
     return BMS_STATUS_OK;
 }
 
@@ -91,8 +115,12 @@ static const BmsConfigStore g_bms_lab_config_store = {
 
 static BmsStatus bms_app_init_persistent_config(void)
 {
-    if (blc_flash_capacity != FLASH_SIZE_512K) {
-        return BMS_STATUS_NOT_SUPPORTED;
+    uint8_t slot;
+    uint16_t index;
+    for (slot = 0u; slot < BMS_CONFIG_REQUIRED_SLOTS; ++slot) {
+        for (index = 0u; index < BMS_CONFIG_SLOT_SIZE; ++index) {
+            g_bms_lab_config_slots[slot][index] = 0xffu;
+        }
     }
     return bms_firmware_set_config_store(&g_bms_lab_config_store);
 }

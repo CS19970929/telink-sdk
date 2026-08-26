@@ -5,7 +5,8 @@
 #define BMS_BOARD_PROFILE_COMPILE_ONLY       1
 
 /* The complete local name shares the 31-byte legacy advertising packet. */
-#define BMS_BLE_DEFAULT_NAME                  "Telink BMS"
+// #define BMS_BLE_DEFAULT_NAME                  "Telink BMS"
+#define BMS_BLE_DEFAULT_NAME                  "BT_Telink BMS"
 #define BMS_BLE_NAME_MAX_BYTES                26u
 
 /* The proof OTA target changes only PATCH to make a reboot observable. */
@@ -24,7 +25,7 @@
 #error "BMS firmware version components must fit in one byte"
 #endif
 
-/* Only tools/bms.py lab targets set these values to 1. */
+/* The simulator remains opt-in; OTA is enabled for every firmware profile. */
 #ifndef BMS_LAB_SIMULATOR_ENABLE
 #define BMS_LAB_SIMULATOR_ENABLE             0
 #endif
@@ -48,27 +49,13 @@
 /* SMP bonding + encryption gate BMSLink write/CONTROL commands. */
 #define BLE_APP_SECURITY_ENABLE              1
 #define BLE_OTA_SERVER_ENABLE                1
-/*
- * Keep OTA physically disabled until this product's Flash partition, image
- * size, boot address and recovery procedure have passed board review.
- * Setting this to 1 enables the SDK OTA server and its GATT write callback.
- */
+#define BMS_CONFIG_PERSISTENT_ENABLE         0
+/* OTA is part of every firmware profile and uses the reviewed SDK layout. */
 #define BMS_OTA_PROCESS_TIMEOUT_SECONDS       180
-/*
- * These must be set as one reviewed tuple before BMS_OTA_LAYOUT_APPROVED can
- * be enabled. 0 is intentionally invalid, so a partial configuration fails
- * at compile time instead of silently using the SDK's default image slot.
- */
-#if (BMS_LAB_OTA_ENABLE)
 /* SDK reference layout: 124 KiB image in the 0x20000 secondary slot. */
 #define BMS_OTA_LAYOUT_APPROVED               1
 #define BMS_OTA_FIRMWARE_SIZE_KB              124
 #define BMS_OTA_BOOT_ADDRESS                  0x20000u
-#else
-#define BMS_OTA_LAYOUT_APPROVED               0
-#define BMS_OTA_FIRMWARE_SIZE_KB              0
-#define BMS_OTA_BOOT_ADDRESS                  0u
-#endif
 #define APP_FLASH_PROTECTION_ENABLE          0
 #define APP_BATT_CHECK_ENABLE                0
 #define UART_PRINT_DEBUG_ENABLE              0

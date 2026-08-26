@@ -35,7 +35,7 @@ async def main_async() -> None:
                 print(await client.ble_name())
             else:
                 await client.set_ble_name(args.name)
-                print("蓝牙名称已更新并写入配置 Flash；重启后仍会保留")
+                print("蓝牙名称已更新；实验室固件复位后恢复默认")
         elif args.command == "faults": print(await client.faults())
         elif args.command == "ota-info": print(await client.ota_info())
         else:

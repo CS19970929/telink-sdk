@@ -46,8 +46,9 @@ static const u8 g_ota_service_uuid[16] = WRAPPING_BRACES(TELINK_OTA_UUID_SERVICE
 static const u8 g_ota_value_uuid[16] = WRAPPING_BRACES(TELINK_SPP_DATA_OTA);
 static u8 g_device_name[BMS_BLE_NAME_MAX_BYTES] = BMS_BLE_DEFAULT_NAME;
 static u8 g_device_name_length = sizeof(BMS_BLE_DEFAULT_NAME) - 1u;
-static u8 g_rx_value[1];
-static u8 g_tx_value[1];
+/* The PC client sends one BMSLink frame in several 20-byte ATT writes. */
+static u8 g_rx_value[BMSLINK_MAX_FRAME_SIZE];
+static u8 g_tx_value[BMS_GATT_NOTIFY_FRAGMENT_MAX];
 static u8 g_tx_ccc[2];
 static u8 g_ota_value[1];
 static u8 g_ota_ccc[2];

@@ -293,7 +293,7 @@ def build_firmware(output_name: str, profile: str, defines: tuple[str, ...]) -> 
 
 
 def command_build_firmware(_: argparse.Namespace) -> None:
-    build_firmware("firmware", "production", ())
+    build_firmware("firmware", "production-ota", ())
 
 
 def command_build_lab_firmware(_: argparse.Namespace) -> None:

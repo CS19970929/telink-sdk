@@ -303,8 +303,11 @@ static BmsStatus bms_firmware_write_schema(const BmsLinkFrame *request)
             continue;
         }
         flags = descriptor->flags;
-        if (g_bms_firmware.config_store_enabled == 0u) {
-            flags = BMS_PARAMETER_FLAG_READ;
+        if ((g_bms_firmware.config_store_enabled == 0u) ||
+            (BMS_CONFIG_PERSISTENT_ENABLE == 0)) {
+            flags = (g_bms_firmware.config_store_enabled != 0u) ?
+                    (BMS_PARAMETER_FLAG_READ | BMS_PARAMETER_FLAG_WRITE) :
+                    BMS_PARAMETER_FLAG_READ;
         }
         bms_firmware_write_u16(&response.payload[offset], descriptor->id); offset += 2u;
         response.payload[offset++] = descriptor->type;

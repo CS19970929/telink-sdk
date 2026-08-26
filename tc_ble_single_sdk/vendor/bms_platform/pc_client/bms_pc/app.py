@@ -348,7 +348,7 @@ class BmsDesktop:
                 return
             if not messagebox.askyesno(
                 "确认修改蓝牙名",
-                "名称会立即用于 GAP 和广播数据，并写入实验室配置 Flash。\n\n继续？",
+                "名称会立即用于 GAP 和广播数据；实验室固件复位后恢复默认。\n\n继续？",
             ):
                 return
             self._call(self.client.set_ble_name(name))
