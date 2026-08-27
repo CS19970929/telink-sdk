@@ -38,12 +38,12 @@
 #define BMS_AFE_TS4_ENABLE              1u
 
 /*
- * Effective current-shunt resistance must be confirmed from the assembled BOM/
- * PCB population before current is reported in engineering units. 0 means
- * "not calibrated": firmware still exposes the signed SH3673510 CUR raw code.
+ * Schematic has RS1..RS8, each 2 mOhm, connected in parallel in the main
+ * current path. Effective sense resistance is therefore 2mOhm / 8 = 0.25mOhm.
+ * Keep this overrideable for BOM variants.
  */
 #ifndef BMS_RSENSE_UOHM
-#define BMS_RSENSE_UOHM                 0u
+#define BMS_RSENSE_UOHM                 250u
 #endif
 
 #define BMS_AFE_POLL_PERIOD_US          100000u
