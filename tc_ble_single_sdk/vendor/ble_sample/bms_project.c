@@ -95,8 +95,13 @@ void bms_project_init(void)
     btname_init();
     btname_set_refresh_callback(bms_ble_refresh_name);
 
-    /* Preserve the old 0x0000..0x0002 Modbus MAC slots. */
-    (void)blc_ll_readBDAddr(g_bms.mac_public);
+    /*
+     * 0x0000..0x0002 remain reserved for the historical BLE public-MAC
+     * packing. Do not call a non-SDK address getter here. The values stay zero
+     * until app.c exports the already initialized public address through the
+     * project setter in a later integration step.
+     */
+    memset(g_bms.mac_public, 0, sizeof(g_bms.mac_public));
 
     bms_ble_compat_apply();
 
