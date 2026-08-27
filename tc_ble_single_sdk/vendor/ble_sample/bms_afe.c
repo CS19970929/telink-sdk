@@ -97,9 +97,26 @@ int bms_afe_set_mos(u8 charge_on, u8 discharge_on)
     return sh3673510_set_mos(charge_on, discharge_on);
 }
 
-int bms_afe_clear_flags(u8 flag1_mask, u8 flag2_mask)
+int bms_afe_clear_faults(u32 fault_mask)
 {
-    return sh3673510_clear_flags(flag1_mask, flag2_mask);
+    u8 flag1 = 0;
+    u8 flag2 = 0;
+
+    if (fault_mask & BMS_AFE_FAULT_CELL_OV) flag1 |= BIT(0);
+    if (fault_mask & BMS_AFE_FAULT_CELL_UV) flag1 |= BIT(1);
+    if (fault_mask & BMS_AFE_FAULT_DSG_OC1) flag1 |= BIT(2);
+    if (fault_mask & BMS_AFE_FAULT_DSG_OC2) flag1 |= BIT(3);
+    if (fault_mask & BMS_AFE_FAULT_SHORT) flag1 |= BIT(4);
+    if (fault_mask & BMS_AFE_FAULT_CHG_OC) flag1 |= BIT(5);
+    if (fault_mask & BMS_AFE_FAULT_RESET) flag1 |= BIT(7);
+
+    if (fault_mask & BMS_AFE_FAULT_WDT) flag2 |= BIT(2);
+    if (fault_mask & BMS_AFE_FAULT_CHG_UT) flag2 |= BIT(4);
+    if (fault_mask & BMS_AFE_FAULT_CHG_OT) flag2 |= BIT(5);
+    if (fault_mask & BMS_AFE_FAULT_DSG_UT) flag2 |= BIT(6);
+    if (fault_mask & BMS_AFE_FAULT_DSG_OT) flag2 |= BIT(7);
+
+    return sh3673510_clear_flags(flag1, flag2);
 }
 
 int bms_afe_get_param_limits(u16 param_id, s32 *min_value, s32 *max_value, s32 *step)
