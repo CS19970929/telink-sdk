@@ -53,6 +53,21 @@ For register writes and software reset, the AFE returns ACK/NACK while the final
 
 `MOS_EN` is enabled. Therefore the SH3673510 remains the authority for hardware protection and also provides the AFE-native opposite-current MOS reopen behavior. Software does not repeatedly force a MOS against an active AFE veto.
 
+## AFE-independent BMS parameter model
+
+The application layer no longer treats SH3673510 register codes as BMS parameters.
+
+- `bms_param.c/.h` owns stable logical BMS parameters in physical units.
+- `bms_afe.c/.h` is the adapter between those logical parameters and the selected AFE.
+- `sh3673510.c/.h` remains vendor-specific and is not referenced by Modbus/application logic.
+- AFE faults are normalized into common `BMS_AFE_FAULT_*` bits before the BMS layer consumes them; raw FLAG registers remain available only for engineering diagnostics.
+- Requested and effective parameter values are stored separately. AFE-backed values are range checked and quantized according to the adapter's actual capability.
+- After AFE reset/reinitialization, the common parameter DB is re-projected to the AFE instead of treating AFE registers as the source of truth.
+
+For this board, Cell OV L3 and Cell UV L3 are already mapped through the adapter. Their ranges and 5 mV step come from the SH3673510 capability. Other current/temperature levels remain present in the common model but are not marked ACTIVE until their exact software/AFE enforcement mapping is implemented; the firmware does not invent an OCD1/OCD2/OCC/SC mapping from legacy level names.
+
+See `BMS_COMMON_PARAMETER_PROTOCOL.md` for the PC/app-facing descriptor and value protocol.
+
 ## BLE compatibility
 
 The branch keeps the previous BMS behavior:
@@ -70,48 +85,58 @@ The branch keeps the previous BMS behavior:
 
 The stock sample's unconditional 60-second deep-sleep path is suppressed. BLE suspend remains enabled. A board-specific deep-sleep policy must only be enabled after the actual wake-source polarities and desired product behavior are confirmed on hardware.
 
-## Modbus compatibility
+## Modbus compatibility and V2.1 discovery
 
 Slave address remains `0x01`; RTU supports functions `0x03`, `0x06`, `0x10`.
 
 | Address | Meaning |
 |---|---|
-| `0x0000..0x0002` | BLE public MAC, same two-bytes-per-register packing as the previous project; populated through the same SDK `blc_initMacAddress()` source used by the BLE stack |
+| `0x0000..0x0002` | BLE public MAC, same two-bytes-per-register packing as the previous project |
 | `0x0100..` | BLE name |
 | `0x1005` | SOC write compatibility |
 | `0x1102` | command compatibility / project commands |
-| `0x2100..0x2140` | legacy protection parameter window |
+| `0x2000..0x200F` | V2.1 protocol/AFE/capability discovery |
+| `0x2100..0x2140` | legacy 16-bit protection parameter window, translated into the common DB |
+| `0x4000..` | per-parameter capability descriptors: logical ID, unit, range, step, enforcement, quantization, requested/effective values |
+| `0x4400..` | common requested values, signed32 physical units, RW with FC10 |
+| `0x4500..` | common effective values, signed32 physical units, RO |
 | `0xC002..` | SN / hardware version / software version |
 | `0xD000..0xD03E` | legacy `stCell_Info`-style realtime window |
 | `0xD115` | runtime/AFE status |
-| `0xD116` | raw SH3673510 FLAG2:FLAG1 |
+| `0xD116` | raw SH3673510 FLAG2:FLAG1 engineering view |
 | `0xD120..0xD12A` | compact realtime block (`0x4253`, version 1) |
+
+New clients should start by reading `0x2000..0x200F`, then build their parameter UI from the descriptors instead of shipping SH3673510-specific ranges in the app. Existing clients can keep using `0x2100..0x2140`; both paths modify the same parameter DB.
+
+Common signed32 values reject FC06 half-writes. FC10 must write complete high/low pairs. A multi-parameter write validates the whole logical block first, applies AFE projections, rolls earlier AFE writes back if a later hardware write fails, and commits the RAM DB only after the hardware phase succeeds.
 
 Current sign in the compact signed-current register is kept compatible with the previous application protocol: **positive = charging, negative = discharging**. Internally the raw SH3673510 polarity is retained (positive CUR = discharge, negative CUR = charge).
 
 Project commands currently added at `0x1102`:
 
-- `0x0010`: clear current AFE protection flags;
+- `0x0010`: clear current normalized AFE protection faults;
 - `0x0011`: request charge + discharge MOS on;
 - `0x0012`: request both MOS off.
 
 ## Intentional boundaries
 
-The following are deliberately not guessed from the schematic:
+The following are deliberately not guessed from the schematic or old level names:
 
-1. Product-specific software current-limit thresholds and exact SH3673510 OCD1/OCD2/OCC/SC settings. The AFE defaults remain active until required charge/discharge/short-circuit limits are confirmed.
+1. Exact mapping of common charge/discharge L1/L2/L3 current parameters onto SH3673510 OCD1/OCD2/OCC/SC. The AFE's native protection remains configured, but these common fields stay `ACTIVE=0` until the product mapping is explicit.
 2. Final automatic balancing start voltage/delta policy. Low-level balance control is implemented, but automatic balancing is not enabled with invented thresholds.
 3. Product deep-sleep entry criteria and wake polarities. The generic Telink demo deep-sleep behavior is disabled rather than risking an unreachable board.
-4. Persistent storage semantics for writable protection/BLE-name parameters. The addresses are compatible, but persistence needs a flash-layout decision that must coexist with Telink OTA and flash protection.
+4. Flash persistence for writable common parameters/BLE name. The RAM parameter DB, validation, quantization and hardware transaction layer are implemented; persistence still needs a reserved flash layout that does not collide with Telink OTA/system sectors.
 
 ## Bench bring-up order
 
 1. Power board without load/charger; verify TLSR8251 remains alive and BLE advertises `BT_HSD011_10S50A`.
-2. Read Modbus `0xD115/0xD116`; confirm AFE online/init bits and no unexpected protection flags.
-3. Read `0xD000..0xD009`; compare all ten cell voltages against a DMM.
-4. Read TS1/TS2/TS4 and verify room-temperature values.
-5. Apply known bidirectional current and verify current magnitude and sign on both legacy and compact registers.
-6. Test RS485 115200 8N1, slave 1, functions 03/06/10.
-7. Test the same Modbus frames over BLE SPP.
-8. Verify OTA with the existing Telink BMS updater.
-9. Independently inject OV/UV/OCD/OCC/SC/temperature faults and confirm AFE MOS veto behavior before enabling higher-level automatic policies.
+2. Read `0x2000..0x200F`; confirm magic `0x424D`, protocol `0x0201`, AFE type `0x3510`, 10 cells and TS mask.
+3. Read Cell OV L3 descriptor, requested and effective values; write a non-5mV-aligned common OV with FC10 and confirm conservative effective quantization/readback.
+4. Read Modbus `0xD115/0xD116`; confirm AFE online/init bits and no unexpected protection flags.
+5. Read `0xD000..0xD009`; compare all ten cell voltages against a DMM.
+6. Read TS1/TS2/TS4 and verify room-temperature values.
+7. Apply known bidirectional current and verify current magnitude and sign on both legacy and compact registers.
+8. Test RS485 115200 8N1, slave 1, functions 03/06/10.
+9. Test the same Modbus frames over BLE SPP.
+10. Verify OTA with the existing Telink BMS updater.
+11. Independently inject OV/UV/OCD/OCC/SC/temperature faults and confirm AFE MOS veto behavior before enabling higher-level automatic policies.
