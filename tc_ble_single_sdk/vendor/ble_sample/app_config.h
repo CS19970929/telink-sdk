@@ -7,7 +7,12 @@
 ///////////////////////// Feature Configuration /////////////////////////////////////////////////////////
 #define BLE_APP_PM_ENABLE                              1
 #define PM_DEEPSLEEP_RETENTION_ENABLE                  0
-#define TEST_CONN_CURRENT_ENABLE                       0
+/*
+ * The Telink sample uses TEST_CONN_CURRENT_ENABLE to suppress its generic
+ * 60-second DEEPSLEEP path. HS-D011 wake polarity/policy belongs to the BMS
+ * power manager and must not be guessed here. BLE suspend remains enabled.
+ */
+#define TEST_CONN_CURRENT_ENABLE                       1
 #define BLE_APP_SECURITY_ENABLE                        0
 #define BLE_OTA_SERVER_ENABLE                          1
 #define APP_FLASH_PROTECTION_ENABLE                    1
