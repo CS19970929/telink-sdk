@@ -48,4 +48,19 @@
 
 #define BMS_AFE_POLL_PERIOD_US          100000u
 
+/* TLSR8251F512 has 512 KiB flash. The SDK reserves the upper flash area for
+ * system/user data and uses 0x74000+ for SMP/MAC/calibration. These two 4 KiB
+ * sectors are intentionally below those SDK sectors and above the low-448 KiB
+ * firmware-protection boundary.
+ */
+#define BMS_PARAM_FLASH_SLOT_A          0x72000u
+#define BMS_PARAM_FLASH_SLOT_B          0x73000u
+#define BMS_PARAM_FLASH_REQUIRED_SIZE   FLASH_SIZE_512K
+
+/* On this common-port BMS, a software veto for one current direction must not
+ * unnecessarily block the opposite direction. Hardware AFE protection remains
+ * authoritative and may still veto a MOS request.
+ */
+#define BMS_PROTECT_OPPOSITE_REOPEN_ENABLE  1u
+
 #endif /* HS_D011_BOARD_H_ */
