@@ -30,6 +30,27 @@ int bms_afe_init(void)
     return sh3673510_init();
 }
 
+static u32 normalize_faults(const sh3673510_sample_t *raw)
+{
+    u32 f = 0;
+    if (!raw) return 0;
+
+    if (raw->flag1 & BIT(0)) f |= BMS_AFE_FAULT_CELL_OV;
+    if (raw->flag1 & BIT(1)) f |= BMS_AFE_FAULT_CELL_UV;
+    if (raw->flag1 & BIT(2)) f |= BMS_AFE_FAULT_DSG_OC1;
+    if (raw->flag1 & BIT(3)) f |= BMS_AFE_FAULT_DSG_OC2;
+    if (raw->flag1 & BIT(4)) f |= BMS_AFE_FAULT_SHORT;
+    if (raw->flag1 & BIT(5)) f |= BMS_AFE_FAULT_CHG_OC;
+    if (raw->flag1 & BIT(7)) f |= BMS_AFE_FAULT_RESET;
+
+    if (raw->flag2 & BIT(4)) f |= BMS_AFE_FAULT_CHG_UT;
+    if (raw->flag2 & BIT(5)) f |= BMS_AFE_FAULT_CHG_OT;
+    if (raw->flag2 & BIT(6)) f |= BMS_AFE_FAULT_DSG_UT;
+    if (raw->flag2 & BIT(7)) f |= BMS_AFE_FAULT_DSG_OT;
+    if (raw->flag2 & BIT(2)) f |= BMS_AFE_FAULT_WDT;
+    return f;
+}
+
 int bms_afe_sample(bms_afe_sample_t *sample)
 {
     sh3673510_sample_t raw;
@@ -61,6 +82,7 @@ int bms_afe_sample(bms_afe_sample_t *sample)
 
     sample->vtop_mv = raw.vtop_mv;
     sample->vchgr_mv = raw.vchgr_mv;
+    sample->fault_bits = normalize_faults(&raw);
     sample->flag1 = raw.flag1;
     sample->flag2 = raw.flag2;
     sample->flag3 = raw.flag3;
