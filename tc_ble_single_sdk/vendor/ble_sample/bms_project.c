@@ -3,6 +3,7 @@
 #include "modbus_uart.h"
 #include "btname_modbus.h"
 #include "bms_ble_compat.h"
+#include "bms_protect.h"
 #include "app_config.h"
 #include "stack/ble/ble.h"
 #include <string.h>
@@ -70,14 +71,20 @@ void bms_project_init(void)
 
     bms_ble_compat_apply();
 
-    /* Common logical parameters are initialized before the AFE so the selected
-     * adapter can project the effective hardware values during afe_start().
+    /* Load common logical parameters (defaults or CRC-validated A/B flash record)
+     * before the AFE is initialized, then project only parameters supported by
+     * the selected AFE adapter.
      */
     bms_param_init();
     rc = afe_start();
     g_bms.afe_last_error = (s16)rc;
     g_bms.afe_init_ok = (rc == 0) ? 1u : 0u;
     s_afe_fail_count = 0u;
+
+    /* Software protection starts with user MOS requests enabled but does not
+     * issue an ON request until the first complete AFE sample is evaluated.
+     */
+    bms_protect_init();
 
     modbus_uart_init();
     s_afe_poll_tick = clock_time();
@@ -86,7 +93,9 @@ void bms_project_init(void)
 void bms_project_process(void)
 {
     int rc;
+
     modbus_uart_process();
+    bms_param_process();
 
     if (clock_time_exceed(s_afe_poll_tick, BMS_AFE_POLL_PERIOD_US)) {
         s_afe_poll_tick = clock_time();
@@ -101,11 +110,14 @@ void bms_project_process(void)
                 g_bms.afe_init_ok = (rc == 0) ? 1u : 0u;
                 g_bms.afe_last_error = (s16)rc;
                 s_afe_fail_count = 0u;
+                if (rc == 0)
+                    bms_protect_force_mos_reapply();
             }
         } else {
             g_bms.afe_init_ok = 1u;
             g_bms.afe_last_error = 0;
             s_afe_fail_count = 0u;
+            bms_protect_update(&g_bms.afe, g_bms.soc);
         }
     }
 }
@@ -227,9 +239,9 @@ int bms_project_command(u16 value)
     case 0x0010u:
         return bms_afe_clear_faults(BMS_AFE_FAULT_ALL) == 0;
     case 0x0011u:
-        return bms_afe_set_mos(1u, 1u) == 0;
+        return bms_protect_request_mos(1u, 1u);
     case 0x0012u:
-        return bms_afe_set_mos(0u, 0u) == 0;
+        return bms_protect_request_mos(0u, 0u);
     default:
         return 1;
     }
