@@ -1,0 +1,174 @@
+#include "modbus_rtu.h"
+#include "bms_project.h"
+#include "btname_modbus.h"
+#include <string.h>
+
+static const u8 k_serial[] = "HSD011-10S50A";
+static const u8 k_hwver[]  = "HS-D011-V1";
+static const u8 k_swver[]  = "V1.0.0";
+
+u16 modbus_crc16(const u8 *data, u32 len)
+{
+    u16 crc = 0xFFFFu;
+    u8 i;
+    while (len--) {
+        crc ^= *data++;
+        for (i = 0; i < 8; ++i)
+            crc = (crc & 1u) ? (u16)((crc >> 1) ^ 0xA001u) : (u16)(crc >> 1);
+    }
+    return crc;
+}
+
+static u16 ascii_reg(const u8 *s, u16 maxlen, u16 off)
+{
+    u16 pos = (u16)(off * 2u);
+    u8 hi = 0, lo = 0;
+    if (pos < maxlen && s[pos]) hi = s[pos];
+    if (pos + 1u < maxlen && s[pos + 1u]) lo = s[pos + 1u];
+    return (u16)(((u16)hi << 8) | lo);
+}
+
+static u16 read_realtime(u16 off)
+{
+    const bms_project_state_t *s = bms_project_get_state();
+    s32 cur_a10 = s->afe.current_ma_valid ? (s->afe.current_ma / 100) : 0;
+    switch (off) {
+    case 0: return BMS_REALTIME_REG_MAGIC;
+    case 1: return BMS_REALTIME_REG_VERSION;
+    case 2: return (u16)(s->afe.pack_mv / 10u);            /* V*100 */
+    case 3: return (u16)((s16)cur_a10);                    /* +charge, -discharge, A*10 */
+    case 4: return s->soc;
+    case 5: return bms_project_read_legacy_d000(48);
+    case 6: return bms_project_read_legacy_d000(49);
+    case 7: return bms_project_read_legacy_d000(41);       /* TS4-MOS */
+    case 8: return s->afe.cell_max_mv;
+    case 9: return s->afe.cell_min_mv;
+    case 10: return s->afe.cell_delta_mv;
+    default: return 0;
+    }
+}
+
+static u16 read_reg(u16 reg)
+{
+    const bms_project_state_t *s = bms_project_get_state();
+    if (reg < 3u) return 0u; /* MAC slot retained; populated later when BLE address is exported. */
+
+    if (reg >= BTNAME_REG_BASE && reg < BTNAME_REG_BASE + BTNAME_REG_COUNT)
+        return ascii_reg((const u8 *)btname_get(), BTNAME_TOTAL_MAX_LEN,
+                         (u16)(reg - BTNAME_REG_BASE));
+
+    if (reg >= PROD_SN_REG_BASE && reg < PROD_SN_REG_BASE + PROD_SN_REG_COUNT)
+        return ascii_reg(k_serial, sizeof(k_serial), (u16)(reg - PROD_SN_REG_BASE));
+    if (reg >= PROD_HW_VER_REG_BASE && reg < PROD_HW_VER_REG_BASE + PROD_HW_VER_REG_COUNT)
+        return ascii_reg(k_hwver, sizeof(k_hwver), (u16)(reg - PROD_HW_VER_REG_BASE));
+    if (reg >= PROD_SW_VER_REG_BASE && reg < PROD_SW_VER_REG_BASE + PROD_SW_VER_REG_COUNT)
+        return ascii_reg(k_swver, sizeof(k_swver), (u16)(reg - PROD_SW_VER_REG_BASE));
+
+    if (reg >= 0xD000u && reg <= 0xD03Eu)
+        return bms_project_read_legacy_d000((u16)(reg - 0xD000u));
+    if (reg >= 0x2100u && reg <= 0x2140u)
+        return bms_project_read_protect((u16)(reg - 0x2100u));
+
+    if (reg == 0xD115u)
+        return (u16)((s->afe.online ? BIT(0) : 0u) |
+                     (s->afe_init_ok ? BIT(1) : 0u) |
+                     ((s->afe.bstatus1 & 0x3Fu) << 8));
+    if (reg == 0xD116u)
+        return (u16)(((u16)s->afe.flag2 << 8) | s->afe.flag1);
+    if (reg >= BMS_REALTIME_REG_BASE && reg < BMS_REALTIME_REG_BASE + BMS_REALTIME_REG_COUNT)
+        return read_realtime((u16)(reg - BMS_REALTIME_REG_BASE));
+
+    return 0u;
+}
+
+static int write_one(u16 reg, u16 val)
+{
+    if (reg >= BTNAME_REG_BASE && reg < BTNAME_REG_BASE + BTNAME_REG_COUNT)
+        return btname_modbus_on_write_holding(reg, 1u, &val);
+    if (reg >= 0x2100u && reg <= 0x2140u)
+        return bms_project_write_protect((u16)(reg - 0x2100u), val);
+    if (reg == 0x1005u) {
+        bms_project_set_soc(val);
+        return 1;
+    }
+    if (reg == 0x1102u)
+        return bms_project_command(val);
+    return 1; /* Keep legacy permissive behavior for currently unused writable slots. */
+}
+
+static void append_crc(u8 *rsp, u32 *len)
+{
+    u16 crc = modbus_crc16(rsp, *len);
+    rsp[(*len)++] = (u8)crc;
+    rsp[(*len)++] = (u8)(crc >> 8);
+}
+
+static int exception_rsp(u8 addr, u8 func, u8 ex, u8 *rsp, u32 *rsp_len)
+{
+    rsp[0] = addr; rsp[1] = (u8)(func | 0x80u); rsp[2] = ex;
+    *rsp_len = 3u; append_crc(rsp, rsp_len); return 1;
+}
+
+int modbus_on_frame(const u8 *req, u32 req_len, u8 *rsp, u32 *rsp_len)
+{
+    u16 got_crc, calc_crc, reg, qty, val;
+    u32 i, out;
+    u8 func;
+
+    if (rsp_len) *rsp_len = 0;
+    if (!req || !rsp || !rsp_len || req_len < 4u) return 0;
+    if (req[0] != MODBUS_SLAVE_ADDR) return 0;
+
+    got_crc = (u16)(req[req_len - 2u] | ((u16)req[req_len - 1u] << 8));
+    calc_crc = modbus_crc16(req, req_len - 2u);
+    if (got_crc != calc_crc) return 0;
+
+    func = req[1];
+    if (func == 0x03u) {
+        if (req_len != 8u) return exception_rsp(req[0], func, 0x03u, rsp, rsp_len);
+        reg = (u16)(((u16)req[2] << 8) | req[3]);
+        qty = (u16)(((u16)req[4] << 8) | req[5]);
+        if (!qty || qty > 125u) return exception_rsp(req[0], func, 0x03u, rsp, rsp_len);
+        rsp[0] = req[0]; rsp[1] = func; rsp[2] = (u8)(qty * 2u); out = 3u;
+        for (i = 0; i < qty; ++i) {
+            val = read_reg((u16)(reg + i));
+            rsp[out++] = (u8)(val >> 8); rsp[out++] = (u8)val;
+        }
+        *rsp_len = out; append_crc(rsp, rsp_len); return 1;
+    }
+
+    if (func == 0x06u) {
+        if (req_len != 8u) return exception_rsp(req[0], func, 0x03u, rsp, rsp_len);
+        reg = (u16)(((u16)req[2] << 8) | req[3]);
+        val = (u16)(((u16)req[4] << 8) | req[5]);
+        if (!write_one(reg, val)) return exception_rsp(req[0], func, 0x04u, rsp, rsp_len);
+        memcpy(rsp, req, 6u); *rsp_len = 6u; append_crc(rsp, rsp_len); return 1;
+    }
+
+    if (func == 0x10u) {
+        u8 bytes;
+        if (req_len < 9u) return exception_rsp(req[0], func, 0x03u, rsp, rsp_len);
+        reg = (u16)(((u16)req[2] << 8) | req[3]);
+        qty = (u16)(((u16)req[4] << 8) | req[5]);
+        bytes = req[6];
+        if (!qty || qty > 123u || bytes != qty * 2u || req_len != (u32)9u + bytes)
+            return exception_rsp(req[0], func, 0x03u, rsp, rsp_len);
+
+        if (reg >= BTNAME_REG_BASE && (u32)reg + qty <= BTNAME_REG_BASE + BTNAME_REG_COUNT) {
+            u16 words[BTNAME_REG_COUNT];
+            for (i = 0; i < qty; ++i)
+                words[i] = (u16)(((u16)req[7u + i * 2u] << 8) | req[8u + i * 2u]);
+            if (!btname_modbus_on_write_holding(reg, qty, words))
+                return exception_rsp(req[0], func, 0x04u, rsp, rsp_len);
+        } else {
+            for (i = 0; i < qty; ++i) {
+                val = (u16)(((u16)req[7u + i * 2u] << 8) | req[8u + i * 2u]);
+                if (!write_one((u16)(reg + i), val))
+                    return exception_rsp(req[0], func, 0x04u, rsp, rsp_len);
+            }
+        }
+        memcpy(rsp, req, 6u); *rsp_len = 6u; append_crc(rsp, rsp_len); return 1;
+    }
+
+    return exception_rsp(req[0], func, 0x01u, rsp, rsp_len);
+}
