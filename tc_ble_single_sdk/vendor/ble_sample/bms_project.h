@@ -15,6 +15,7 @@ typedef struct {
     u16 capacity_factory_x100;
     u16 cycle_count;
     u16 protect[BMS_PROTECT_REG_COUNT];
+    u8 mac_public[6];
     u8 afe_init_ok;
     s16 afe_last_error;
 } bms_project_state_t;
