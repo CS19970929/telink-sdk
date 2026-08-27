@@ -76,7 +76,7 @@ Slave address remains `0x01`; RTU supports functions `0x03`, `0x06`, `0x10`.
 
 | Address | Meaning |
 |---|---|
-| `0x0000..0x0002` | reserved for the previous BLE public-MAC packing; currently returns zero until the stock BLE initializer exports the resolved MAC to the project layer |
+| `0x0000..0x0002` | BLE public MAC, same two-bytes-per-register packing as the previous project; populated through the same SDK `blc_initMacAddress()` source used by the BLE stack |
 | `0x0100..` | BLE name |
 | `0x1005` | SOC write compatibility |
 | `0x1102` | command compatibility / project commands |
