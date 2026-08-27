@@ -1,4 +1,4 @@
-# BMS Common Parameter Protocol V2.1
+# BMS Common Parameter Protocol V2.2
 
 This protocol separates application-visible BMS parameters from vendor AFE registers. PC tools, mobile apps and BLE/RS485 clients operate on stable logical parameter IDs and physical units; the firmware's `bms_afe` adapter translates supported parameters to the selected AFE.
 
@@ -16,7 +16,7 @@ This protocol separates application-visible BMS parameters from vendor AFE regis
 | Offset | Meaning |
 |---|---|
 | +0 | Magic `0x424D` (`BM`) |
-| +1 | Protocol version, currently `0x0201` |
+| +1 | Protocol version, currently `0x0202` |
 | +2 | Parameter schema version |
 | +3 | AFE type (`0x3510` = SH3673510) |
 | +4 | Cell count |
@@ -134,7 +134,7 @@ The historical 65-register map remains available. Internally it is translated in
 - temperature groups: legacy `(degC + 40) * 10` <-> common signed 0.1 degC;
 - voltage, SOC and delay groups retain their existing scalar encoding.
 
-Legacy and V2.1 clients therefore modify the same parameter state; there are not two independent configurations.
+Legacy and V2.2 clients therefore modify the same parameter state; there are not two independent configurations.
 
 ## Runtime protection status: 0xD130
 
