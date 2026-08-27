@@ -1,5 +1,6 @@
 #include "modbus_rtu.h"
 #include "bms_project.h"
+#include "bms_param.h"
 #include "btname_modbus.h"
 #include <string.h>
 
@@ -31,20 +32,19 @@ static u16 ascii_reg(const u8 *s, u16 maxlen, u16 off)
 static u16 read_realtime(u16 off)
 {
     const bms_project_state_t *s = bms_project_get_state();
-    /* SH3673510 CUR is positive while discharging and negative while charging.
-     * Existing BMS protocol uses the opposite signed convention:
-     * positive = charge, negative = discharge.
+    /* Internal AFE convention is positive=discharge, negative=charge.
+     * Existing application protocol keeps positive=charge, negative=discharge.
      */
     s32 cur_a10 = s->afe.current_ma_valid ? -(s->afe.current_ma / 100) : 0;
     switch (off) {
     case 0: return BMS_REALTIME_REG_MAGIC;
     case 1: return BMS_REALTIME_REG_VERSION;
-    case 2: return (u16)(s->afe.pack_mv / 10u);            /* V*100 */
-    case 3: return (u16)((s16)cur_a10);                    /* +charge, -discharge, A*10 */
+    case 2: return (u16)(s->afe.pack_mv / 10u);
+    case 3: return (u16)((s16)cur_a10);
     case 4: return s->soc;
     case 5: return bms_project_read_legacy_d000(48);
     case 6: return bms_project_read_legacy_d000(49);
-    case 7: return bms_project_read_legacy_d000(41);       /* TS4-MOS */
+    case 7: return bms_project_read_legacy_d000(41);
     case 8: return s->afe.cell_max_mv;
     case 9: return s->afe.cell_min_mv;
     case 10: return s->afe.cell_delta_mv;
@@ -65,6 +65,15 @@ static u16 read_reg(u16 reg)
         return ascii_reg((const u8 *)btname_get(), BTNAME_TOTAL_MAX_LEN,
                          (u16)(reg - BTNAME_REG_BASE));
 
+    /* New AFE-independent protocol discovery/capability windows. */
+    if (reg >= BMS_PARAM_META_BASE && reg < BMS_PARAM_META_BASE + BMS_PARAM_META_COUNT)
+        return bms_param_read_meta_reg(reg);
+    if (reg >= BMS_PARAM_CAP_BASE && reg < BMS_PARAM_CAP_BASE + BMS_PARAM_CAP_REG_COUNT)
+        return bms_param_read_cap_reg(reg);
+
+    if (reg >= BMS_PARAM_LEGACY_BASE && reg < BMS_PARAM_LEGACY_BASE + BMS_PARAM_COUNT)
+        return bms_project_read_protect((u16)(reg - BMS_PARAM_LEGACY_BASE));
+
     if (reg >= PROD_SN_REG_BASE && reg < PROD_SN_REG_BASE + PROD_SN_REG_COUNT)
         return ascii_reg(k_serial, sizeof(k_serial), (u16)(reg - PROD_SN_REG_BASE));
     if (reg >= PROD_HW_VER_REG_BASE && reg < PROD_HW_VER_REG_BASE + PROD_HW_VER_REG_COUNT)
@@ -74,8 +83,6 @@ static u16 read_reg(u16 reg)
 
     if (reg >= 0xD000u && reg <= 0xD03Eu)
         return bms_project_read_legacy_d000((u16)(reg - 0xD000u));
-    if (reg >= 0x2100u && reg <= 0x2140u)
-        return bms_project_read_protect((u16)(reg - 0x2100u));
 
     if (reg == 0xD115u)
         return (u16)((s->afe.online ? BIT(0) : 0u) |
@@ -93,15 +100,21 @@ static int write_one(u16 reg, u16 val)
 {
     if (reg >= BTNAME_REG_BASE && reg < BTNAME_REG_BASE + BTNAME_REG_COUNT)
         return btname_modbus_on_write_holding(reg, 1u, &val);
-    if (reg >= 0x2100u && reg <= 0x2140u)
-        return bms_project_write_protect((u16)(reg - 0x2100u), val);
+
+    if ((reg >= BMS_PARAM_META_BASE && reg < BMS_PARAM_META_BASE + BMS_PARAM_META_COUNT) ||
+        (reg >= BMS_PARAM_CAP_BASE && reg < BMS_PARAM_CAP_BASE + BMS_PARAM_CAP_REG_COUNT))
+        return 0; /* discovery/capability windows are read-only */
+
+    if (reg >= BMS_PARAM_LEGACY_BASE && reg < BMS_PARAM_LEGACY_BASE + BMS_PARAM_COUNT)
+        return bms_project_write_protect((u16)(reg - BMS_PARAM_LEGACY_BASE), val);
+
     if (reg == 0x1005u) {
         bms_project_set_soc(val);
         return 1;
     }
     if (reg == 0x1102u)
         return bms_project_command(val);
-    return 1; /* Keep legacy permissive behavior for currently unused writable slots. */
+    return 1;
 }
 
 static void append_crc(u8 *rsp, u32 *len)
@@ -168,7 +181,16 @@ int modbus_on_frame(const u8 *req, u32 req_len, u8 *rsp, u32 *rsp_len)
                 words[i] = (u16)(((u16)req[7u + i * 2u] << 8) | req[8u + i * 2u]);
             if (!btname_modbus_on_write_holding(reg, qty, words))
                 return exception_rsp(req[0], func, 0x04u, rsp, rsp_len);
-        } else {
+        }
+        else if (reg >= BMS_PARAM_LEGACY_BASE &&
+                 (u32)reg + qty <= BMS_PARAM_LEGACY_BASE + BMS_PARAM_COUNT) {
+            u16 words[BMS_PROTECT_REG_COUNT];
+            for (i = 0; i < qty; ++i)
+                words[i] = (u16)(((u16)req[7u + i * 2u] << 8) | req[8u + i * 2u]);
+            if (!bms_project_write_protect_block((u16)(reg - BMS_PARAM_LEGACY_BASE), qty, words))
+                return exception_rsp(req[0], func, 0x04u, rsp, rsp_len);
+        }
+        else {
             for (i = 0; i < qty; ++i) {
                 val = (u16)(((u16)req[7u + i * 2u] << 8) | req[8u + i * 2u]);
                 if (!write_one((u16)(reg + i), val))
