@@ -45,6 +45,12 @@ External temperature channels are TS1, TS2 and TS4-MOS. TS3 is not populated. Th
 - hardware watchdog at 3.92 s;
 - AFE watchdog alarm plus automatic BMS-side AFE re-initialization after repeated SPI failures.
 
+### SPI timing note
+
+The SH3673510 read SDO sequence is `0xFF, READ_CMD, REG_ADDR, DATA_LEN, DATA1..DATAN, CRC8`. The B85 SDK `spi_read()` sends the command first and then deliberately clocks/discards the first post-command byte. For this AFE that discarded byte is the echoed `DATA_LEN`, so the driver requests `N+1` returned bytes and treats them as `DATA1..DATAN + CRC8`.
+
+For register writes and software reset, the AFE returns ACK/NACK while the final invalid/dummy byte is clocked. The generic B85 `spi_read()` also consumes that first post-command byte internally, so the driver does not pretend to inspect an ACK that the API does not expose. It transmits the complete `CMD/REG/DATA/CRC/dummy` or `0x0B/0xBB/0xCC/CRC/dummy` timing and validates success with a CRC-protected register readback/probe.
+
 `MOS_EN` is enabled. Therefore the SH3673510 remains the authority for hardware protection and also provides the AFE-native opposite-current MOS reopen behavior. Software does not repeatedly force a MOS against an active AFE veto.
 
 ## BLE compatibility
@@ -70,7 +76,7 @@ Slave address remains `0x01`; RTU supports functions `0x03`, `0x06`, `0x10`.
 
 | Address | Meaning |
 |---|---|
-| `0x0000..0x0002` | BLE public MAC, same packing as previous project |
+| `0x0000..0x0002` | reserved for the previous BLE public-MAC packing; currently returns zero until the stock BLE initializer exports the resolved MAC to the project layer |
 | `0x0100..` | BLE name |
 | `0x1005` | SOC write compatibility |
 | `0x1102` | command compatibility / project commands |
