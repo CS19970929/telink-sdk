@@ -32,6 +32,7 @@
 #define BMS_AFE_FAULT_DSG_UT       BIT(9)
 #define BMS_AFE_FAULT_WDT          BIT(10)
 #define BMS_AFE_FAULT_RESET        BIT(11)
+#define BMS_AFE_FAULT_ALL          0xFFFFFFFFu
 
 #define BMS_AFE_APPLY_OK            0
 #define BMS_AFE_APPLY_NOT_MAPPED    1
@@ -78,7 +79,7 @@ void bms_afe_get_info(bms_afe_info_t *info);
 int bms_afe_init(void);
 int bms_afe_sample(bms_afe_sample_t *sample);
 int bms_afe_set_mos(u8 charge_on, u8 discharge_on);
-int bms_afe_clear_flags(u8 flag1_mask, u8 flag2_mask);
+int bms_afe_clear_faults(u32 fault_mask);
 
 /* Return 1 when this logical parameter has a direct AFE hardware projection.
  * min/max/step are expressed in the logical parameter's standard unit.
