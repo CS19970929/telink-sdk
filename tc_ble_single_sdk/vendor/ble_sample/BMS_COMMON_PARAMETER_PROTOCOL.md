@@ -9,6 +9,7 @@ This protocol separates application-visible BMS parameters from vendor AFE regis
 - BLE SPP transports the same Modbus RTU frame as RS485.
 - Existing clients can continue using `0x2100..0x2140` with the historical 16-bit encodings.
 - New clients should discover `0x2000`, read descriptors at `0x4000`, then use signed 32-bit common values at `0x4400` and effective values at `0x4500`.
+- Protection runtime state is AFE-independent and available at `0xD130..0xD13A`.
 
 ## Discovery block: 0x2000
 
@@ -52,6 +53,8 @@ Logical ID format is `0x10GF`: `G` is the parameter group and `F` is the field.
 | A | MOS high-temperature | 0.1 degC signed |
 | B | Cell voltage delta | mV |
 | C | Low SOC | % |
+
+The same group index is also the bit position in the common runtime protection bitmaps. For example bit0 is Cell OV, bit4 is Charge OC and bit10 is MOS OT.
 
 ### Fields
 
@@ -99,7 +102,7 @@ Unit encoding:
 - `4`: signed 0.1 degC;
 - `5`: percent.
 
-`SUPPORTED=1, ACTIVE=0` deliberately means the parameter is recognized/storable but the current firmware does not claim that it is enforcing that protection yet. A generic app should display it accordingly instead of assuming every AFE implements every logical level.
+`SUPPORTED=1, ACTIVE=0` deliberately means the parameter is recognized/storable but the current firmware does not claim that it is enforcing that protection. A generic app should display it accordingly instead of assuming every logical parameter is active on every board.
 
 ## Common requested values: 0x4400
 
@@ -121,9 +124,7 @@ Each parameter occupies two read-only signed32 registers:
 
 `address = 0x4500 + parameter_index * 2`
 
-This is the value the device actually uses after AFE-specific range/step quantization. For example, a requested OV value not exactly representable by the AFE may differ from the effective value.
-
-A generic app should normally show the requested value while also reading the effective value after a write. If they differ, the UI can show the actual hardware value without knowing any AFE register formula.
+This is the value the device actually uses after AFE-specific range/step quantization. A generic app should normally show the requested value while also reading the effective value after a write. If they differ, the UI can show the actual hardware value without knowing any AFE register formula.
 
 ## Legacy 0x2100 compatibility
 
@@ -135,14 +136,69 @@ The historical 65-register map remains available. Internally it is translated in
 
 Legacy and V2.1 clients therefore modify the same parameter state; there are not two independent configurations.
 
+## Runtime protection status: 0xD130
+
+Read 11 registers with FC03. The block is intentionally AFE-independent so the same PC/app diagnostics can be used across SH36735xx, SH367309, BQ769x2 or later adapters.
+
+| Address | Meaning |
+|---|---|
+| `0xD130` | Magic `0x5052` (`PR`) |
+| `0xD131` | Protection status version, currently `1` |
+| `0xD132` | Level-1 active group bitmap |
+| `0xD133` | Level-2 active group bitmap |
+| `0xD134` | Level-3 active group bitmap |
+| `0xD135` | Any-active group bitmap (`L1 | L2 | L3`) |
+| `0xD136` | MOS request/veto/effective state flags |
+| `0xD137` | Last AFE MOS command result, signed16 |
+| `0xD138` | Normalized AFE fault bitmap low 16 |
+| `0xD139` | Normalized AFE fault bitmap high 16 |
+| `0xD13A` | Parameter persistence status |
+
+`0xD136` bit assignment:
+
+- bit0: user charge-MOS request ON;
+- bit1: user discharge-MOS request ON;
+- bit2: software charge veto active;
+- bit3: software discharge veto active;
+- bit4: effective charge-MOS request sent/desired after software policy;
+- bit5: effective discharge-MOS request sent/desired after software policy.
+
+The effective bits describe the common software decision. The AFE remains authoritative for hardware protection and may refuse/override a MOS-on request while a hardware protection condition is active.
+
+## Software protection policy
+
+Except for unresolved Bus/Pack OV/UV compatibility groups, common L1/L2/L3 parameters are active in the software protection engine.
+
+- L1 is status/alarm only and does not veto a MOS.
+- L2 and L3 veto the corresponding current direction.
+- Cell OV, Charge OC, Charge OT and Charge UT veto charging.
+- Cell UV, Discharge OC, Discharge OT, Discharge UT and Low SOC veto discharging.
+- MOS OT vetoes both directions.
+- Cell delta is evaluated and reported in the protection bitmaps but currently does not directly veto a MOS.
+- The common-port opposite-current reopen policy is enabled: a software one-direction veto can re-open the opposite-current path when current reverses, while an AFE hardware veto still has final authority.
+
 ## Current SH3673510 mapping
 
-The abstraction is live on this branch. The SH3673510 adapter currently declares direct AFE enforcement only where the mapping is unambiguous:
+The SH3673510 adapter currently has direct hardware projection for the mappings that are unambiguous in the common schema:
 
 - Cell OV Level 3 -> SH3673510 OV, 3000..4500 mV, 5 mV step, conservative floor quantization.
 - Cell UV Level 3 -> SH3673510 UV, 1000..3500 mV, 5 mV step, conservative ceil quantization.
 
-Other logical parameters remain `ACTIVE=0` until their software-protection or AFE-protection mapping is explicitly implemented. In particular, OCD1/OCD2/OCC/SC are not guessed from the old L1/L2/L3 current fields because their physical thresholds and semantics depend on the selected AFE and the board shunt.
+These parameters therefore report `HYBRID` enforcement because both the software protection engine and AFE hardware protection participate. Other active groups currently report `SOFTWARE` enforcement unless/until an explicit AFE mapping is added.
+
+OCD1/OCD2/OCC/SC are not guessed from the common L1/L2/L3 current fields. Their mapping remains an AFE/product policy decision because the native AFE stages have different semantics from the common three-level model.
+
+## Persistence
+
+Common requested parameter values are persisted by the firmware after a debounce delay rather than erasing flash on every Modbus write.
+
+- CRC32 protects each record.
+- Two independent flash slots are alternated with a monotonically increasing sequence number.
+- Startup selects the newest valid slot.
+- A restored record is accepted only if every stored value is still valid under the current schema and AFE capability; otherwise defaults are kept atomically.
+- The AFE is initialized from the common parameter DB after restore, so AFE registers are a runtime projection rather than the source of truth.
+
+`0xD13A` reports persistence state. The low bits include storage supported, valid record present, last save success, storage error and active slot; additional common-layer bits report dirty/pending-save and restore accepted/rejected state. Apps should treat this as diagnostics, not as a parameter value.
 
 ## Adding another AFE
 
@@ -150,8 +206,8 @@ A new AFE implementation changes only the adapter layer:
 
 1. report AFE type/features/cell/temp capability;
 2. normalize samples and faults into `bms_afe_sample_t`;
-3. return the AFE-supported range/step for each logical parameter ID;
-4. translate effective physical-unit values into the AFE's registers/data-memory representation;
+3. return AFE-supported range/step for logical parameter IDs with direct hardware projection;
+4. translate effective physical-unit values into the AFE register/data-memory representation;
 5. keep raw vendor registers confined to engineering/debug paths.
 
-The Modbus addresses, logical IDs, units and app workflow remain unchanged.
+The Modbus addresses, logical IDs, physical units, software protection bitmaps and app workflow remain unchanged.
