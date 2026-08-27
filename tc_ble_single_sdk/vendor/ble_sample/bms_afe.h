@@ -20,6 +20,19 @@
 #define BMS_AFE_FEAT_MOS_CONTROL   BIT(8)
 #define BMS_AFE_FEAT_RAW_DEBUG     BIT(9)
 
+#define BMS_AFE_FAULT_CELL_OV      BIT(0)
+#define BMS_AFE_FAULT_CELL_UV      BIT(1)
+#define BMS_AFE_FAULT_CHG_OC       BIT(2)
+#define BMS_AFE_FAULT_DSG_OC1      BIT(3)
+#define BMS_AFE_FAULT_DSG_OC2      BIT(4)
+#define BMS_AFE_FAULT_SHORT        BIT(5)
+#define BMS_AFE_FAULT_CHG_OT       BIT(6)
+#define BMS_AFE_FAULT_CHG_UT       BIT(7)
+#define BMS_AFE_FAULT_DSG_OT       BIT(8)
+#define BMS_AFE_FAULT_DSG_UT       BIT(9)
+#define BMS_AFE_FAULT_WDT          BIT(10)
+#define BMS_AFE_FAULT_RESET        BIT(11)
+
 #define BMS_AFE_APPLY_OK            0
 #define BMS_AFE_APPLY_NOT_MAPPED    1
 
@@ -48,6 +61,7 @@ typedef struct {
 
     u16 vtop_mv;
     u16 vchgr_mv;
+    u32 fault_bits;
 
     /* Raw AFE status is intentionally retained for engineering diagnostics.
      * Application logic must not decode these fields outside the AFE adapter.
