@@ -2,39 +2,45 @@
 #include "bms_afe.h"
 #include <string.h>
 
-/* Defaults are stored in common physical units, not in AFE register codes.
- * Groups are five fields: L1, L2, L3, recovery, filter/delay.
+/* Defaults are stored in common physical units, never in AFE register codes.
+ * Every group uses: L1, L2, L3, recovery, filter/delay.
  */
 static const s32 k_defaults[BMS_PARAM_COUNT] = {
-    /* 0 CELL_OV: mV, mV, mV, mV, ms */
+    /* CELL_OV: mV, mV, mV, mV, ms */
     4100, 4150, 4200, 4050, 100,
-    /* 1 CELL_UV */
+    /* CELL_UV */
     3000, 2900, 2700, 3050, 100,
-    /* 2 PACK/BUS_OV (legacy semantics retained) */
+    /* BUS_OV - legacy semantics retained */
     4100, 4150, 4200, 4050, 100,
-    /* 3 PACK/BUS_UV */
+    /* BUS_UV */
     3000, 2900, 2700, 3050, 100,
-    /* 4 CHG_OC: mA, mA, mA, mA, ms */
+    /* CHG_OC: mA, mA, mA, mA, ms */
     10000, 15000, 20000, 10000, 500,
-    /* 5 DSG_OC */
+    /* DSG_OC */
     10000, 15000, 20000, 10000, 500,
-    /* 6 CHG_OT: 0.1C, 0.1C, 0.1C, 0.1C, ms */
+    /* CHG_OT: signed 0.1C */
     400, 500, 550, 500, 100,
-    /* 7 CHG_UT */
+    /* CHG_UT */
     50, 30, 0, 50, 100,
-    /* 8 DSG_OT */
+    /* DSG_OT */
     500, 550, 600, 500, 100,
-    /* 9 DSG_UT */
+    /* DSG_UT */
     -100, -150, -200, -100, 100,
-    /* A MOS_OT */
+    /* MOS_OT */
     750, 850, 950, 800, 100,
-    /* B CELL_DELTA: mV */
+    /* CELL_DELTA: mV */
     600, 800, 1000, 800, 100,
-    /* C SOC_LOW: percent */
+    /* SOC_LOW: percent */
     20, 10, 5, 11, 100,
 };
 
 static bms_param_value_t s_values[BMS_PARAM_COUNT];
+
+/* Static transaction scratch keeps the TC32 stack small. Parameter writes are
+ * serialized by the bare-metal main loop / Modbus dispatcher.
+ */
+static s32 s_stage_requested[BMS_PARAM_COUNT];
+static s32 s_stage_effective[BMS_PARAM_COUNT];
 
 static u16 param_group(u16 index)
 {
@@ -50,36 +56,36 @@ static void generic_limits(u16 group, u16 field, bms_param_desc_t *d)
 {
     d->step = 1;
 
-    if (field == 4u) {
+    if (field == BMS_PARAM_FIELD_FILTER_DELAY) {
         d->unit = BMS_PARAM_UNIT_MS;
         d->min_value = 0;
         d->max_value = 60000;
         return;
     }
 
-    if (group <= 3u) {
+    if (group <= BMS_PARAM_GROUP_BUS_UV) {
         d->unit = BMS_PARAM_UNIT_MV;
         d->min_value = 1000;
         d->max_value = 5000;
         return;
     }
 
-    if (group == 4u || group == 5u) {
+    if (group == BMS_PARAM_GROUP_CHG_OC || group == BMS_PARAM_GROUP_DSG_OC) {
         d->unit = BMS_PARAM_UNIT_MA;
         d->min_value = 0;
         d->max_value = 1000000;
-        d->step = 100; /* legacy protocol resolution is 0.1 A */
+        d->step = 100; /* legacy transport resolution is 0.1 A */
         return;
     }
 
-    if (group >= 6u && group <= 10u) {
+    if (group >= BMS_PARAM_GROUP_CHG_OT && group <= BMS_PARAM_GROUP_MOS_OT) {
         d->unit = BMS_PARAM_UNIT_TEMP_DC;
         d->min_value = -400;
         d->max_value = 1250;
         return;
     }
 
-    if (group == 11u) {
+    if (group == BMS_PARAM_GROUP_CELL_DELTA) {
         d->unit = BMS_PARAM_UNIT_MV;
         d->min_value = 0;
         d->max_value = 5000;
@@ -116,9 +122,9 @@ int bms_param_get_desc(u16 index, bms_param_desc_t *d)
 
     generic_limits(group, field, d);
 
-    /* The AFE adapter only overrides logical parameters for which it has a
-     * direct and unambiguous hardware projection. Other parameters remain in
-     * the common model but are not falsely advertised as active protection.
+    /* The AFE adapter overrides only parameters with a direct, unambiguous
+     * hardware projection. A common parameter may exist while ACTIVE=0; that
+     * means the current firmware stores it but does not yet claim enforcement.
      */
     if (bms_afe_get_param_limits(d->id, &afe_min, &afe_max, &afe_step)) {
         d->min_value = afe_min;
@@ -127,6 +133,7 @@ int bms_param_get_desc(u16 index, bms_param_desc_t *d)
         d->flags |= BMS_PARAM_FLAG_ACTIVE;
         d->enforcement = BMS_PARAM_ENFORCE_AFE;
 
+        /* Hardware protection is quantized in the conservative direction. */
         if (d->id == BMS_PARAM_ID_CELL_OV_L3)
             d->quantize = BMS_PARAM_QUANTIZE_FLOOR;
         else if (d->id == BMS_PARAM_ID_CELL_UV_L3)
@@ -150,6 +157,8 @@ static s32 quantize_value(const bms_param_desc_t *d, s32 value)
     s32 rem;
 
     if (!d || d->step <= 1) return value;
+
+    /* prepare_value() guarantees value >= min, so delta/rem are non-negative. */
     delta = value - d->min_value;
     q = delta / d->step;
     rem = delta % d->step;
@@ -168,31 +177,80 @@ static s32 quantize_value(const bms_param_desc_t *d, s32 value)
 static int prepare_value(u16 index, s32 requested, s32 *effective)
 {
     bms_param_desc_t d;
+
     if (!effective || !bms_param_get_desc(index, &d)) return 0;
     if ((d.flags & BMS_PARAM_FLAG_WRITABLE) == 0u) return 0;
     if (requested < d.min_value || requested > d.max_value) return 0;
+
     *effective = quantize_value(&d, requested);
+    return 1;
+}
+
+static int desc_has_afe_projection(const bms_param_desc_t *d)
+{
+    if (!d) return 0;
+    if ((d->flags & BMS_PARAM_FLAG_ACTIVE) == 0u) return 0;
+    return d->enforcement == BMS_PARAM_ENFORCE_AFE ||
+           d->enforcement == BMS_PARAM_ENFORCE_HYBRID;
+}
+
+/* Two-phase parameter transaction:
+ * 1) validate/quantize every logical value;
+ * 2) project all applicable values to hardware while RAM DB still contains the
+ *    old configuration; if an AFE write fails, previous AFE writes are rolled
+ *    back from that old DB;
+ * 3) commit requested/effective values to RAM only after hardware succeeds.
+ */
+static int commit_staged(u16 start_index, u16 count)
+{
+    u16 i;
+    u16 j;
+    u16 index;
+    bms_param_desc_t d;
+    int rc;
+
+    if (count == 0u || start_index >= BMS_PARAM_COUNT ||
+        (u32)start_index + count > BMS_PARAM_COUNT) return 0;
+
+    for (i = 0; i < count; ++i) {
+        index = (u16)(start_index + i);
+        if (!prepare_value(index, s_stage_requested[i], &s_stage_effective[i]))
+            return 0;
+    }
+
+    for (i = 0; i < count; ++i) {
+        index = (u16)(start_index + i);
+        if (!bms_param_get_desc(index, &d)) return 0;
+        if (!desc_has_afe_projection(&d)) continue;
+
+        rc = bms_afe_apply_param(d.id, s_stage_effective[i]);
+        if (rc != BMS_AFE_APPLY_OK) {
+            /* Best-effort rollback of every earlier AFE projection. RAM values
+             * are still old, so they are the authoritative rollback source.
+             */
+            for (j = 0; j < i; ++j) {
+                u16 rollback_index = (u16)(start_index + j);
+                if (!bms_param_get_desc(rollback_index, &d)) continue;
+                if (!desc_has_afe_projection(&d)) continue;
+                (void)bms_afe_apply_param(d.id, s_values[rollback_index].effective_value);
+            }
+            return 0;
+        }
+    }
+
+    for (i = 0; i < count; ++i) {
+        index = (u16)(start_index + i);
+        s_values[index].requested_value = s_stage_requested[i];
+        s_values[index].effective_value = s_stage_effective[i];
+    }
     return 1;
 }
 
 static int set_by_index(u16 index, s32 requested)
 {
-    bms_param_desc_t d;
-    s32 effective;
-    int rc;
-
-    if (!prepare_value(index, requested, &effective)) return 0;
-    if (!bms_param_get_desc(index, &d)) return 0;
-
-    if ((d.flags & BMS_PARAM_FLAG_ACTIVE) &&
-        (d.enforcement == BMS_PARAM_ENFORCE_AFE || d.enforcement == BMS_PARAM_ENFORCE_HYBRID)) {
-        rc = bms_afe_apply_param(d.id, effective);
-        if (rc != BMS_AFE_APPLY_OK) return 0;
-    }
-
-    s_values[index].requested_value = requested;
-    s_values[index].effective_value = effective;
-    return 1;
+    if (index >= BMS_PARAM_COUNT) return 0;
+    s_stage_requested[0] = requested;
+    return commit_staged(index, 1u);
 }
 
 void bms_param_init(void)
@@ -216,9 +274,7 @@ int bms_param_apply_hardware_all(void)
 
     for (i = 0; i < BMS_PARAM_COUNT; ++i) {
         if (!bms_param_get_desc(i, &d)) continue;
-        if ((d.flags & BMS_PARAM_FLAG_ACTIVE) == 0u) continue;
-        if (d.enforcement != BMS_PARAM_ENFORCE_AFE &&
-            d.enforcement != BMS_PARAM_ENFORCE_HYBRID) continue;
+        if (!desc_has_afe_projection(&d)) continue;
 
         rc = bms_afe_apply_param(d.id, s_values[i].effective_value);
         if (rc != BMS_AFE_APPLY_OK) return -(int)(i + 1u);
@@ -231,9 +287,11 @@ static s32 legacy_to_common(u16 offset, u16 raw)
     u16 group = param_group(offset);
     u16 field = param_field(offset);
 
-    if (field == 4u) return (s32)raw;
-    if (group == 4u || group == 5u) return (s32)raw * 100; /* 0.1A -> mA */
-    if (group >= 6u && group <= 10u) return (s32)raw - 400; /* old +40C offset */
+    if (field == BMS_PARAM_FIELD_FILTER_DELAY) return (s32)raw;
+    if (group == BMS_PARAM_GROUP_CHG_OC || group == BMS_PARAM_GROUP_DSG_OC)
+        return (s32)raw * 100; /* legacy A*10 -> common mA */
+    if (group >= BMS_PARAM_GROUP_CHG_OT && group <= BMS_PARAM_GROUP_MOS_OT)
+        return (s32)raw - 400; /* legacy (degC+40)*10 -> signed 0.1C */
     return (s32)raw;
 }
 
@@ -243,11 +301,11 @@ static u16 common_to_legacy(u16 offset, s32 value)
     u16 field = param_field(offset);
     s32 raw;
 
-    if (field == 4u)
+    if (field == BMS_PARAM_FIELD_FILTER_DELAY)
         raw = value;
-    else if (group == 4u || group == 5u)
+    else if (group == BMS_PARAM_GROUP_CHG_OC || group == BMS_PARAM_GROUP_DSG_OC)
         raw = value / 100;
-    else if (group >= 6u && group <= 10u)
+    else if (group >= BMS_PARAM_GROUP_CHG_OT && group <= BMS_PARAM_GROUP_MOS_OT)
         raw = value + 400;
     else
         raw = value;
@@ -260,9 +318,6 @@ static u16 common_to_legacy(u16 offset, s32 value)
 u16 bms_param_read_legacy(u16 offset)
 {
     if (offset >= BMS_PARAM_COUNT) return 0u;
-    /* Legacy window preserves the requested value. The new capability block
-     * separately exposes the effective hardware-quantized value.
-     */
     return common_to_legacy(offset, s_values[offset].requested_value);
 }
 
@@ -275,28 +330,14 @@ int bms_param_write_legacy(u16 offset, u16 raw_value)
 int bms_param_write_legacy_block(u16 offset, u16 qty, const u16 *raw_values)
 {
     u16 i;
-    s32 effective;
 
     if (!raw_values || qty == 0u || offset >= BMS_PARAM_COUNT ||
         (u32)offset + qty > BMS_PARAM_COUNT) return 0;
 
-    /* Validate the complete block first so a range/unit error cannot leave a
-     * half-written block. Hardware-I/O failure rollback is intentionally left
-     * to the future persistent transaction layer.
-     */
-    for (i = 0; i < qty; ++i) {
-        if (!prepare_value((u16)(offset + i),
-                           legacy_to_common((u16)(offset + i), raw_values[i]),
-                           &effective))
-            return 0;
-    }
+    for (i = 0; i < qty; ++i)
+        s_stage_requested[i] = legacy_to_common((u16)(offset + i), raw_values[i]);
 
-    for (i = 0; i < qty; ++i) {
-        if (!set_by_index((u16)(offset + i),
-                          legacy_to_common((u16)(offset + i), raw_values[i])))
-            return 0;
-    }
-    return 1;
+    return commit_staged(offset, qty);
 }
 
 static u16 hi16(s32 value)
@@ -307,6 +348,72 @@ static u16 hi16(s32 value)
 static u16 lo16(s32 value)
 {
     return (u16)((u32)value);
+}
+
+static s32 pair_to_s32(u16 hi, u16 lo)
+{
+    u32 raw = ((u32)hi << 16) | lo;
+    return (s32)raw;
+}
+
+u16 bms_param_read_value_reg(u16 reg)
+{
+    u16 rel;
+    u16 index;
+    u16 word;
+    s32 value;
+
+    if (reg >= BMS_PARAM_VALUE_BASE &&
+        reg < BMS_PARAM_VALUE_BASE + BMS_PARAM_VALUE_REG_COUNT) {
+        rel = (u16)(reg - BMS_PARAM_VALUE_BASE);
+        index = (u16)(rel / BMS_PARAM_VALUE_STRIDE);
+        word = (u16)(rel % BMS_PARAM_VALUE_STRIDE);
+        value = s_values[index].requested_value;
+        return word == 0u ? hi16(value) : lo16(value);
+    }
+
+    if (reg >= BMS_PARAM_EFFECTIVE_BASE &&
+        reg < BMS_PARAM_EFFECTIVE_BASE + BMS_PARAM_VALUE_REG_COUNT) {
+        rel = (u16)(reg - BMS_PARAM_EFFECTIVE_BASE);
+        index = (u16)(rel / BMS_PARAM_VALUE_STRIDE);
+        word = (u16)(rel % BMS_PARAM_VALUE_STRIDE);
+        value = s_values[index].effective_value;
+        return word == 0u ? hi16(value) : lo16(value);
+    }
+
+    return 0u;
+}
+
+int bms_param_write_value_block(u16 reg, u16 qty, const u16 *words)
+{
+    u16 rel;
+    u16 start_index;
+    u16 count;
+    u16 i;
+
+    if (!words || qty == 0u ||
+        reg < BMS_PARAM_VALUE_BASE ||
+        reg >= BMS_PARAM_VALUE_BASE + BMS_PARAM_VALUE_REG_COUNT)
+        return 0;
+
+    rel = (u16)(reg - BMS_PARAM_VALUE_BASE);
+
+    /* A common value is atomic signed32: FC16 must begin at its high word and
+     * contain complete high/low pairs. Half-value writes are rejected.
+     */
+    if ((rel % BMS_PARAM_VALUE_STRIDE) != 0u ||
+        (qty % BMS_PARAM_VALUE_STRIDE) != 0u)
+        return 0;
+
+    start_index = (u16)(rel / BMS_PARAM_VALUE_STRIDE);
+    count = (u16)(qty / BMS_PARAM_VALUE_STRIDE);
+    if (count == 0u || (u32)start_index + count > BMS_PARAM_COUNT)
+        return 0;
+
+    for (i = 0; i < count; ++i)
+        s_stage_requested[i] = pair_to_s32(words[i * 2u], words[i * 2u + 1u]);
+
+    return commit_staged(start_index, count);
 }
 
 u16 bms_param_read_meta_reg(u16 reg)
@@ -332,6 +439,10 @@ u16 bms_param_read_meta_reg(u16 reg)
     case 9: return BMS_PARAM_CAP_STRIDE;
     case 10: return (u16)info.feature_bits;
     case 11: return (u16)(info.feature_bits >> 16);
+    case 12: return BMS_PARAM_VALUE_BASE;
+    case 13: return BMS_PARAM_EFFECTIVE_BASE;
+    case 14: return BMS_PARAM_VALUE_STRIDE;
+    case 15: return BMS_PARAM_VALUE_VERSION;
     default: return 0u;
     }
 }
