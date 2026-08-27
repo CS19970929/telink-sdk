@@ -16,10 +16,10 @@
 #define SCONF5_WDT_EN      BIT(2)
 #define SCONF5_WDT_3P92S   0x03u
 
-/* Datasheet tWARMUP max is 10 ms. Keep margin before the first access and
- * after software reset because reset also restarts VADC/CADC/SPI modules.
- */
-#define SH3673510_WARMUP_US 12000u
+/* Datasheet tWARMUP max is 10 ms. */
+#define SH3673510_WARMUP_US     12000u
+/* Datasheet charge-pump build time tCP max is 125 ms. */
+#define SH3673510_PUMP_BUILD_US 130000u
 
 static u8 sh_crc8_update(u8 crc, u8 data)
 {
@@ -143,6 +143,22 @@ static int sh_set_cell_count_10s(void)
     return sh3673510_write(SH3673510_REG_SCONF4, v);
 }
 
+static int sh_ensure_pump_ready(u8 *sconf2)
+{
+    u8 v;
+    if (!sconf2) return -1;
+    v = *sconf2;
+    if ((v & SCONF2_PUMP_EN) == 0u) {
+        /* Do not request either FET until VCP has had time to establish. */
+        v &= (u8)~(SCONF2_CHGMOS | SCONF2_DSGMOS);
+        v |= SCONF2_PUMP_EN;
+        if (sh3673510_write(SH3673510_REG_SCONF2, v)) return -2;
+        sleep_us(SH3673510_PUMP_BUILD_US);
+    }
+    *sconf2 = v;
+    return 0;
+}
+
 int sh3673510_init(void)
 {
     u8 v;
@@ -181,10 +197,16 @@ int sh3673510_init(void)
     if (sh3673510_write(SH3673510_REG_BAL_M, 0x00u)) return -8;
     if (sh3673510_write(SH3673510_REG_BAL_L, 0x00u)) return -9;
 
-    /* Charge pump on, both MOS requests on. Hardware protections retain veto. */
     if (sh3673510_read(SH3673510_REG_SCONF2, &v, 1)) return -10;
-    v |= (SCONF2_PUMP_EN | SCONF2_CHGMOS | SCONF2_DSGMOS);
+    /* Software reset leaves PUMP_EN at its reset value, but keep the sequence
+     * correct for every entry path: pump first, FET request second.
+     */
+    v &= (u8)~(SCONF2_CHGMOS | SCONF2_DSGMOS);
     if (sh3673510_write(SH3673510_REG_SCONF2, v)) return -11;
+    v &= (u8)~SCONF2_PUMP_EN;
+    if (sh_ensure_pump_ready(&v)) return -12;
+    v |= (SCONF2_CHGMOS | SCONF2_DSGMOS);
+    if (sh3673510_write(SH3673510_REG_SCONF2, v)) return -13;
 
     return 0;
 }
@@ -193,7 +215,7 @@ int sh3673510_set_mos(u8 charge_on, u8 discharge_on)
 {
     u8 v;
     if (sh3673510_read(SH3673510_REG_SCONF2, &v, 1)) return -1;
-    v |= SCONF2_PUMP_EN;
+    if ((charge_on || discharge_on) && sh_ensure_pump_ready(&v)) return -2;
     if (charge_on) v |= SCONF2_CHGMOS; else v &= (u8)~SCONF2_CHGMOS;
     if (discharge_on) v |= SCONF2_DSGMOS; else v &= (u8)~SCONF2_DSGMOS;
     return sh3673510_write(SH3673510_REG_SCONF2, v);
