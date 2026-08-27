@@ -1,6 +1,7 @@
 #include "modbus_rtu.h"
 #include "bms_project.h"
 #include "bms_param.h"
+#include "bms_protect.h"
 #include "btname_modbus.h"
 #include <string.h>
 
@@ -57,6 +58,37 @@ static u16 read_realtime(u16 off)
     }
 }
 
+static u16 read_protect_status(u16 off)
+{
+    const bms_project_state_t *project = bms_project_get_state();
+    const bms_protect_status_t *protect = bms_protect_get_status();
+    u16 mos_flags;
+
+    if (!project || !protect) return 0u;
+
+    mos_flags = (u16)((protect->user_charge_on ? BIT(0) : 0u) |
+                      (protect->user_discharge_on ? BIT(1) : 0u) |
+                      (protect->charge_veto ? BIT(2) : 0u) |
+                      (protect->discharge_veto ? BIT(3) : 0u) |
+                      (protect->effective_charge_on ? BIT(4) : 0u) |
+                      (protect->effective_discharge_on ? BIT(5) : 0u));
+
+    switch (off) {
+    case 0: return BMS_PROTECT_STATUS_MAGIC;
+    case 1: return BMS_PROTECT_STATUS_VERSION;
+    case 2: return protect->l1_bitmap;
+    case 3: return protect->l2_bitmap;
+    case 4: return protect->l3_bitmap;
+    case 5: return protect->active_bitmap;
+    case 6: return mos_flags;
+    case 7: return (u16)protect->last_mos_error;
+    case 8: return (u16)project->afe.fault_bits;
+    case 9: return (u16)(project->afe.fault_bits >> 16);
+    case 10: return bms_param_persist_status_word();
+    default: return 0u;
+    }
+}
+
 static u16 read_reg(u16 reg)
 {
     const bms_project_state_t *s = bms_project_get_state();
@@ -101,6 +133,8 @@ static u16 read_reg(u16 reg)
         return (u16)(((u16)s->afe.flag2 << 8) | s->afe.flag1);
     if (reg >= BMS_REALTIME_REG_BASE && reg < BMS_REALTIME_REG_BASE + BMS_REALTIME_REG_COUNT)
         return read_realtime((u16)(reg - BMS_REALTIME_REG_BASE));
+    if (reg >= BMS_PROTECT_STATUS_REG_BASE && reg < BMS_PROTECT_STATUS_REG_BASE + BMS_PROTECT_STATUS_REG_COUNT)
+        return read_protect_status((u16)(reg - BMS_PROTECT_STATUS_REG_BASE));
 
     return 0u;
 }
@@ -113,8 +147,9 @@ static int write_one(u16 reg, u16 val)
     if ((reg >= BMS_PARAM_META_BASE && reg < BMS_PARAM_META_BASE + BMS_PARAM_META_COUNT) ||
         (reg >= BMS_PARAM_CAP_BASE && reg < BMS_PARAM_CAP_BASE + BMS_PARAM_CAP_REG_COUNT) ||
         (reg >= BMS_PARAM_VALUE_BASE && reg < BMS_PARAM_VALUE_BASE + BMS_PARAM_VALUE_REG_COUNT) ||
-        (reg >= BMS_PARAM_EFFECTIVE_BASE && reg < BMS_PARAM_EFFECTIVE_BASE + BMS_PARAM_VALUE_REG_COUNT))
-        return 0; /* metadata/capabilities are RO; signed32 values reject FC06 half-writes */
+        (reg >= BMS_PARAM_EFFECTIVE_BASE && reg < BMS_PARAM_EFFECTIVE_BASE + BMS_PARAM_VALUE_REG_COUNT) ||
+        (reg >= BMS_PROTECT_STATUS_REG_BASE && reg < BMS_PROTECT_STATUS_REG_BASE + BMS_PROTECT_STATUS_REG_COUNT))
+        return 0; /* metadata/capabilities/status are RO; signed32 values reject FC06 half-writes */
 
     if (reg >= BMS_PARAM_LEGACY_BASE && reg < BMS_PARAM_LEGACY_BASE + BMS_PARAM_COUNT)
         return bms_project_write_protect((u16)(reg - BMS_PARAM_LEGACY_BASE), val);
