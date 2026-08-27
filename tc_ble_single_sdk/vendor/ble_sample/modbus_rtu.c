@@ -31,7 +31,11 @@ static u16 ascii_reg(const u8 *s, u16 maxlen, u16 off)
 static u16 read_realtime(u16 off)
 {
     const bms_project_state_t *s = bms_project_get_state();
-    s32 cur_a10 = s->afe.current_ma_valid ? (s->afe.current_ma / 100) : 0;
+    /* SH3673510 CUR is positive while discharging and negative while charging.
+     * Existing BMS protocol uses the opposite signed convention:
+     * positive = charge, negative = discharge.
+     */
+    s32 cur_a10 = s->afe.current_ma_valid ? -(s->afe.current_ma / 100) : 0;
     switch (off) {
     case 0: return BMS_REALTIME_REG_MAGIC;
     case 1: return BMS_REALTIME_REG_VERSION;
@@ -51,7 +55,11 @@ static u16 read_realtime(u16 off)
 static u16 read_reg(u16 reg)
 {
     const bms_project_state_t *s = bms_project_get_state();
-    if (reg < 3u) return 0u; /* MAC slot retained; populated later when BLE address is exported. */
+
+    if (reg < 3u) {
+        u8 i = (u8)(reg * 2u);
+        return (u16)(((u16)s->mac_public[i] << 8) | s->mac_public[i + 1u]);
+    }
 
     if (reg >= BTNAME_REG_BASE && reg < BTNAME_REG_BASE + BTNAME_REG_COUNT)
         return ascii_reg((const u8 *)btname_get(), BTNAME_TOTAL_MAX_LEN,
