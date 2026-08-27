@@ -16,9 +16,7 @@
 #define SCONF5_WDT_EN      BIT(2)
 #define SCONF5_WDT_3P92S   0x03u
 
-/* Datasheet tWARMUP max is 10 ms. */
 #define SH3673510_WARMUP_US     12000u
-/* Datasheet charge-pump build time tCP max is 125 ms. */
 #define SH3673510_PUMP_BUILD_US 130000u
 
 static u8 sh_crc8_update(u8 crc, u8 data)
@@ -79,9 +77,15 @@ int sh3673510_read(u8 reg, u8 *data, u8 len)
     cmd[2] = len;
     memset(rx, 0, sizeof(rx));
 
-    /* IC returns one 0xFF lead byte, N data bytes and CRC8 with CS held low. */
+    /*
+     * SH3673510 full-duplex read sequence on SDO is:
+     *   0xFF, READ_CMD, REG_ADDR, DATA_LEN, DATA1..DATAN, CRC8.
+     * Telink spi_read() discards the SDO byte paired with the final command
+     * phase and exposes DATA_LEN as rx[0]. Therefore request N+2 bytes here:
+     * DATA_LEN + N data bytes + CRC8.
+     */
     spi_read(cmd, 3, rx, (int)len + 2, BMS_AFE_CS_PIN);
-    if (rx[0] != 0xFFu) {
+    if (rx[0] != len) {
         return -2;
     }
 
@@ -91,8 +95,8 @@ int sh3673510_read(u8 reg, u8 *data, u8 len)
     crc = sh_crc8_update(crc, reg);
     crc = sh_crc8_update(crc, len);
     for (i = 0; i < len; ++i) {
-        crc = sh_crc8_update(crc, rx[1u + i]);
         data[i] = rx[1u + i];
+        crc = sh_crc8_update(crc, data[i]);
     }
     if (crc != rx[1u + len]) {
         return -3;
@@ -102,19 +106,21 @@ int sh3673510_read(u8 reg, u8 *data, u8 len)
 
 int sh3673510_write(u8 reg, u8 data)
 {
-    u8 frame[5];
+    u8 frame[4];
     u8 ack = 0;
 
     if (reg < 0x40u || reg > 0x59u) {
         return -1;
     }
 
+    /* Write length is fixed to one byte by the device protocol; it is not a
+     * transmitted field. Wire order: CMD, REG, DATA, CRC, dummy-for-ACK.
+     */
     frame[0] = SH_CMD_WRITE;
     frame[1] = reg;
-    frame[2] = 1u;
-    frame[3] = data;
-    frame[4] = sh_crc8(frame, 4);
-    spi_read(frame, 5, &ack, 1, BMS_AFE_CS_PIN);
+    frame[2] = data;
+    frame[3] = sh_crc8(frame, 3);
+    spi_read(frame, 4, &ack, 1, BMS_AFE_CS_PIN);
     return (ack == SH_ACK) ? 0 : -2;
 }
 
@@ -149,7 +155,6 @@ static int sh_ensure_pump_ready(u8 *sconf2)
     if (!sconf2) return -1;
     v = *sconf2;
     if ((v & SCONF2_PUMP_EN) == 0u) {
-        /* Do not request either FET until VCP has had time to establish. */
         v &= (u8)~(SCONF2_CHGMOS | SCONF2_DSGMOS);
         v |= SCONF2_PUMP_EN;
         if (sh3673510_write(SH3673510_REG_SCONF2, v)) return -2;
@@ -198,9 +203,7 @@ int sh3673510_init(void)
     if (sh3673510_write(SH3673510_REG_BAL_L, 0x00u)) return -9;
 
     if (sh3673510_read(SH3673510_REG_SCONF2, &v, 1)) return -10;
-    /* Software reset leaves PUMP_EN at its reset value, but keep the sequence
-     * correct for every entry path: pump first, FET request second.
-     */
+    /* Pump must be established before CHGMOS/DSGMOS are asserted. */
     v &= (u8)~(SCONF2_CHGMOS | SCONF2_DSGMOS);
     if (sh3673510_write(SH3673510_REG_SCONF2, v)) return -11;
     v &= (u8)~SCONF2_PUMP_EN;
@@ -223,7 +226,6 @@ int sh3673510_set_mos(u8 charge_on, u8 discharge_on)
 
 int sh3673510_set_balance_mask(u16 mask)
 {
-    /* SH3673510 has 10 cells: CB10..CB1 map into BALANCEM[1:0], BALANCEL[7:0]. */
     mask &= 0x03FFu;
     if (sh3673510_write(SH3673510_REG_BAL_H, 0)) return -1;
     if (sh3673510_write(SH3673510_REG_BAL_M, (u8)(mask >> 8))) return -2;
@@ -279,9 +281,6 @@ static u32 sh_ts_to_ohm(u16 code)
 
 static s16 sh_ntc3435_to_dC(u32 ohm)
 {
-    /* HS-D011 schematic specifies 10K/B3435 NTCs. Values below are the same
-     * 5-degree curve used by the previous BMS implementation, in ohms.
-     */
     static const u32 rtab[] = {
         116110u, 89350u, 69430u, 54420u, 43000u, 34220u, 27510u,
         22140u, 18010u, 14700u, 12090u, 10000u, 8310u, 6940u,
