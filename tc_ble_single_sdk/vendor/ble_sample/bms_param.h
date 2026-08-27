@@ -7,24 +7,60 @@
 #define BMS_PARAM_FIELDS_PER_GROUP     5u
 #define BMS_PARAM_COUNT                (BMS_PARAM_GROUP_COUNT * BMS_PARAM_FIELDS_PER_GROUP)
 
+/* Backward-compatible 16-bit parameter window used by existing apps. */
 #define BMS_PARAM_LEGACY_BASE          0x2100u
+
+/* Self-description used by new PC/app clients. */
 #define BMS_PARAM_META_BASE            0x2000u
-#define BMS_PARAM_META_COUNT           12u
+#define BMS_PARAM_META_COUNT           16u
 #define BMS_PARAM_CAP_BASE             0x4000u
 #define BMS_PARAM_CAP_STRIDE           14u
 #define BMS_PARAM_CAP_REG_COUNT        (BMS_PARAM_COUNT * BMS_PARAM_CAP_STRIDE)
 
-#define BMS_PARAM_PROTOCOL_VERSION     0x0200u
+/* New AFE-independent values use signed 32-bit physical units, high word first.
+ * Requested values are RW; effective values are RO after AFE quantization.
+ */
+#define BMS_PARAM_VALUE_BASE           0x4400u
+#define BMS_PARAM_EFFECTIVE_BASE       0x4500u
+#define BMS_PARAM_VALUE_STRIDE         2u
+#define BMS_PARAM_VALUE_REG_COUNT      (BMS_PARAM_COUNT * BMS_PARAM_VALUE_STRIDE)
+
+#define BMS_PARAM_PROTOCOL_VERSION     0x0201u
 #define BMS_PARAM_SCHEMA_VERSION       0x0001u
+#define BMS_PARAM_VALUE_VERSION        0x0001u
 #define BMS_PARAM_META_MAGIC           0x424Du /* 'BM' */
 
+typedef enum {
+    BMS_PARAM_GROUP_CELL_OV = 0,
+    BMS_PARAM_GROUP_CELL_UV,
+    BMS_PARAM_GROUP_BUS_OV,
+    BMS_PARAM_GROUP_BUS_UV,
+    BMS_PARAM_GROUP_CHG_OC,
+    BMS_PARAM_GROUP_DSG_OC,
+    BMS_PARAM_GROUP_CHG_OT,
+    BMS_PARAM_GROUP_CHG_UT,
+    BMS_PARAM_GROUP_DSG_OT,
+    BMS_PARAM_GROUP_DSG_UT,
+    BMS_PARAM_GROUP_MOS_OT,
+    BMS_PARAM_GROUP_CELL_DELTA,
+    BMS_PARAM_GROUP_SOC_LOW,
+} bms_param_group_t;
+
+typedef enum {
+    BMS_PARAM_FIELD_L1 = 0,
+    BMS_PARAM_FIELD_L2,
+    BMS_PARAM_FIELD_L3,
+    BMS_PARAM_FIELD_RECOVERY,
+    BMS_PARAM_FIELD_FILTER_DELAY,
+} bms_param_field_t;
+
 /* Stable logical ID: 0x10GF, G=group, F=field.
- * Group semantics are independent from AFE register maps.
+ * Logical IDs and physical units do not change when the AFE changes.
  */
 #define BMS_PARAM_ID(group, field)     ((u16)(0x1000u + ((u16)(group) << 4) + (u16)(field)))
 
-#define BMS_PARAM_ID_CELL_OV_L3        BMS_PARAM_ID(0u, 2u)
-#define BMS_PARAM_ID_CELL_UV_L3        BMS_PARAM_ID(1u, 2u)
+#define BMS_PARAM_ID_CELL_OV_L3        BMS_PARAM_ID(BMS_PARAM_GROUP_CELL_OV, BMS_PARAM_FIELD_L3)
+#define BMS_PARAM_ID_CELL_UV_L3        BMS_PARAM_ID(BMS_PARAM_GROUP_CELL_UV, BMS_PARAM_FIELD_L3)
 
 typedef enum {
     BMS_PARAM_UNIT_NONE = 0,
@@ -74,9 +110,14 @@ typedef struct {
 void bms_param_init(void);
 int bms_param_apply_hardware_all(void);
 
+/* Existing 0x2100 compatibility path. */
 u16 bms_param_read_legacy(u16 offset);
 int bms_param_write_legacy(u16 offset, u16 raw_value);
 int bms_param_write_legacy_block(u16 offset, u16 qty, const u16 *raw_values);
+
+/* New common-unit protocol path. */
+u16 bms_param_read_value_reg(u16 reg);
+int bms_param_write_value_block(u16 reg, u16 qty, const u16 *words);
 
 int bms_param_get_desc(u16 index, bms_param_desc_t *desc);
 int bms_param_get_value(u16 index, bms_param_value_t *value);
