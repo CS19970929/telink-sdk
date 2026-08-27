@@ -4,7 +4,6 @@
 #define SH_CMD_WRITE       0x01u
 #define SH_CMD_READ        0x02u
 #define SH_CMD_SOFT_RESET  0x0Bu
-#define SH_ACK             0xA5u
 
 #define SCONF2_LTCLR       BIT(7)
 #define SCONF2_PUMP_EN     BIT(4)
@@ -57,14 +56,14 @@ void sh3673510_spi_init(void)
     spi_master_gpio_set(BMS_AFE_SPI_GROUP);
     spi_masterCSpin_select(BMS_AFE_CS_PIN);
 
-    /* 16 MHz / ((7 + 1) * 2) = 1 MHz, SH3673510 requires CPOL=1/CPHA=1. */
+    /* 16 MHz / ((7 + 1) * 2) = 1 MHz. SH3673510 fixes CPOL=1, CPHA=1. */
     spi_master_init(7, SPI_MODE3);
 }
 
 int sh3673510_read(u8 reg, u8 *data, u8 len)
 {
     u8 cmd[3];
-    u8 rx[34];
+    u8 rx[33];
     u8 crc;
     u8 i;
 
@@ -78,16 +77,16 @@ int sh3673510_read(u8 reg, u8 *data, u8 len)
     memset(rx, 0, sizeof(rx));
 
     /*
-     * SH3673510 full-duplex read sequence on SDO is:
+     * SH3673510 SDO sequence is:
      *   0xFF, READ_CMD, REG_ADDR, DATA_LEN, DATA1..DATAN, CRC8.
-     * Telink spi_read() discards the SDO byte paired with the final command
-     * phase and exposes DATA_LEN as rx[0]. Therefore request N+2 bytes here:
-     * DATA_LEN + N data bytes + CRC8.
+     *
+     * The B85 spi_read() sends all three command bytes first, then enters read
+     * mode and deliberately clocks/discards exactly one byte before filling
+     * Data[]. That discarded byte is SH3673510's DATA_LEN echo. Therefore the
+     * returned buffer starts at DATA1, not DATA_LEN. Request N+1 bytes so the
+     * caller receives N data bytes plus CRC8.
      */
-    spi_read(cmd, 3, rx, (int)len + 2, BMS_AFE_CS_PIN);
-    if (rx[0] != len) {
-        return -2;
-    }
+    spi_read(cmd, 3, rx, (int)len + 1, BMS_AFE_CS_PIN);
 
     crc = 0;
     crc = sh_crc8_update(crc, 0xFFu);
@@ -95,11 +94,11 @@ int sh3673510_read(u8 reg, u8 *data, u8 len)
     crc = sh_crc8_update(crc, reg);
     crc = sh_crc8_update(crc, len);
     for (i = 0; i < len; ++i) {
-        data[i] = rx[1u + i];
+        data[i] = rx[i];
         crc = sh_crc8_update(crc, data[i]);
     }
-    if (crc != rx[1u + len]) {
-        return -3;
+    if (crc != rx[len]) {
+        return -2;
     }
     return 0;
 }
@@ -107,38 +106,50 @@ int sh3673510_read(u8 reg, u8 *data, u8 len)
 int sh3673510_write(u8 reg, u8 data)
 {
     u8 frame[4];
-    u8 ack = 0;
+    u8 dummy = 0x00u;
+    u8 verify = 0;
 
     if (reg < 0x40u || reg > 0x59u) {
         return -1;
     }
 
-    /* Write length is fixed to one byte by the device protocol; it is not a
-     * transmitted field. Wire order: CMD, REG, DATA, CRC, dummy-for-ACK.
+    /*
+     * Manual wire order: CMD, REG, DATA, CRC, one invalid/dummy byte.
+     * The AFE drives ACK/NACK while that final dummy byte is clocked. B85's
+     * generic spi_read() discards the first post-command byte, so it cannot be
+     * used to capture this ACK reliably. Send the complete timing with
+     * spi_write(), then verify the register by a CRC-protected readback.
      */
     frame[0] = SH_CMD_WRITE;
     frame[1] = reg;
     frame[2] = data;
     frame[3] = sh_crc8(frame, 3);
-    spi_read(frame, 4, &ack, 1, BMS_AFE_CS_PIN);
-    return (ack == SH_ACK) ? 0 : -2;
+    spi_write(frame, 4, &dummy, 1, BMS_AFE_CS_PIN);
+
+    if (sh3673510_read(reg, &verify, 1) != 0) {
+        return -2;
+    }
+    return (verify == data) ? 0 : -3;
 }
 
 int sh3673510_soft_reset(void)
 {
     u8 frame[4];
-    u8 ack = 0;
+    u8 dummy = 0x00u;
+    u8 probe = 0;
 
     frame[0] = SH_CMD_SOFT_RESET;
     frame[1] = 0xBBu;
     frame[2] = 0xCCu;
     frame[3] = sh_crc8(frame, 3);
-    spi_read(frame, 4, &ack, 1, BMS_AFE_CS_PIN);
-    if (ack != SH_ACK) {
-        return -1;
-    }
+    spi_write(frame, 4, &dummy, 1, BMS_AFE_CS_PIN);
+
     sleep_us(SH3673510_WARMUP_US);
-    return 0;
+    /* Reset also resets SPI/RAM. A valid CRC-protected RAM read is the useful
+     * post-reset verification; do not depend on an ACK byte the generic B85
+     * helper cannot expose without consuming it.
+     */
+    return sh3673510_read(SH3673510_REG_SCONF1, &probe, 1);
 }
 
 static int sh_set_cell_count_10s(void)
