@@ -14,6 +14,12 @@
 #define SCONF5_OCC_EN      BIT(4)
 #define SCONF5_CADC_EN     BIT(3)
 #define SCONF5_WDT_EN      BIT(2)
+#define SCONF5_WDT_3P92S   0x03u
+
+/* Datasheet tWARMUP max is 10 ms. Keep margin before the first access and
+ * after software reset because reset also restarts VADC/CADC/SPI modules.
+ */
+#define SH3673510_WARMUP_US 12000u
 
 static u8 sh_crc8_update(u8 crc, u8 data)
 {
@@ -125,7 +131,7 @@ int sh3673510_soft_reset(void)
     if (ack != SH_ACK) {
         return -1;
     }
-    sleep_us(5000);
+    sleep_us(SH3673510_WARMUP_US);
     return 0;
 }
 
@@ -143,14 +149,14 @@ int sh3673510_init(void)
     u8 sconf6 = 0x0Fu; /* OV/UV/OCD/SC */
 
     sh3673510_spi_init();
-    sleep_us(3000);
+    sleep_us(SH3673510_WARMUP_US);
 
     if (sh3673510_soft_reset()) return -1;
     if (sh_set_cell_count_10s()) return -2;
 
     if (sh3673510_read(SH3673510_REG_SCONF5, &v, 1)) return -3;
-    v |= (SCONF5_MOS_EN | SCONF5_OCC_EN | SCONF5_CADC_EN);
-    v &= (u8)~SCONF5_WDT_EN; /* MCU watchdog is used; AFE WDT stays explicit/off for now. */
+    v |= (SCONF5_MOS_EN | SCONF5_OCC_EN | SCONF5_CADC_EN |
+          SCONF5_WDT_EN | SCONF5_WDT_3P92S);
     if (sh3673510_write(SH3673510_REG_SCONF5, v)) return -4;
 
 #if BMS_AFE_TS1_ENABLE
@@ -167,8 +173,8 @@ int sh3673510_init(void)
 #endif
     if (sh3673510_write(SH3673510_REG_SCONF6, sconf6)) return -5;
 
-    /* Alarm pulse on the protection sources actually used by this board. */
-    if (sh3673510_write(SH3673510_REG_ALARML, 0x1Fu)) return -6;
+    /* OV/UV/OCD/OCC/TEMP + WDT alarm pulses. */
+    if (sh3673510_write(SH3673510_REG_ALARML, 0x5Fu)) return -6;
 
     /* Never enable balancing implicitly at boot. */
     if (sh3673510_write(SH3673510_REG_BAL_H, 0x00u)) return -7;
