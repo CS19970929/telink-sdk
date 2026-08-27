@@ -25,10 +25,17 @@
 #define BMS_PARAM_VALUE_STRIDE         2u
 #define BMS_PARAM_VALUE_REG_COUNT      (BMS_PARAM_COUNT * BMS_PARAM_VALUE_STRIDE)
 
-#define BMS_PARAM_PROTOCOL_VERSION     0x0201u
+#define BMS_PARAM_PROTOCOL_VERSION     0x0202u
 #define BMS_PARAM_SCHEMA_VERSION       0x0001u
 #define BMS_PARAM_VALUE_VERSION        0x0001u
 #define BMS_PARAM_META_MAGIC           0x424Du /* 'BM' */
+
+/* High bits are bms_param-level persistence state; low bits come from the
+ * storage backend and are defined in bms_param_store.h.
+ */
+#define BMS_PARAM_PERSIST_ST_DIRTY             BIT(8)
+#define BMS_PARAM_PERSIST_ST_RESTORE_ACCEPTED  BIT(9)
+#define BMS_PARAM_PERSIST_ST_RESTORE_REJECTED  BIT(10)
 
 typedef enum {
     BMS_PARAM_GROUP_CELL_OV = 0,
@@ -108,7 +115,9 @@ typedef struct {
 } bms_param_value_t;
 
 void bms_param_init(void);
+void bms_param_process(void);
 int bms_param_apply_hardware_all(void);
+u16 bms_param_persist_status_word(void);
 
 /* Existing 0x2100 compatibility path. */
 u16 bms_param_read_legacy(u16 offset);
