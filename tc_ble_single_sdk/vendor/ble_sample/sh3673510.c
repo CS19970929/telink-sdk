@@ -257,18 +257,25 @@ static u32 sh_ts_to_ohm(u16 code)
 
 static s16 sh_ntc3435_to_dC(u32 ohm)
 {
+    /* HS-D011 schematic specifies 10K/B3435 NTCs. Values below are the same
+     * 5-degree curve used by the previous BMS implementation, in ohms.
+     */
     static const u32 rtab[] = {
-        248277u, 135452u, 77523u, 46290u, 28704u, 18410u, 12171u, 8269u,
-        5759u, 4101u, 2981u, 2207u, 1662u, 1272u, 987u
+        116110u, 89350u, 69430u, 54420u, 43000u, 34220u, 27510u,
+        22140u, 18010u, 14700u, 12090u, 10000u, 8310u, 6940u,
+        5830u, 4920u, 4160u, 3550u, 3030u, 2600u, 2240u,
+        1930u, 1670u, 1460u, 1270u, 1110u, 980u, 860u
     };
     u8 i;
-    if (ohm >= rtab[0]) return -400;
-    if (ohm <= rtab[14]) return 1000;
-    for (i = 0; i < 14; ++i) {
-        if (ohm <= rtab[i] && ohm >= rtab[i + 1]) {
-            u32 span = rtab[i] - rtab[i + 1];
+
+    if (ohm >= rtab[0]) return -300;
+    if (ohm <= rtab[27]) return 1050;
+
+    for (i = 0; i < 27u; ++i) {
+        if (ohm <= rtab[i] && ohm >= rtab[i + 1u]) {
+            u32 span = rtab[i] - rtab[i + 1u];
             u32 pos = rtab[i] - ohm;
-            return (s16)(-400 + (s16)i * 100 + (s16)((pos * 100u) / span));
+            return (s16)(-300 + (s16)i * 50 + (s16)((pos * 50u) / span));
         }
     }
     return 0;
