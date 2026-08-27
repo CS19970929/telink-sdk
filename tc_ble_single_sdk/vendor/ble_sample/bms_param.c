@@ -1,6 +1,9 @@
 #include "bms_param.h"
 #include "bms_afe.h"
+#include "bms_param_store.h"
 #include <string.h>
+
+#define BMS_PARAM_SAVE_DELAY_US        1500000u
 
 /* Defaults are stored in common physical units, never in AFE register codes.
  * Every group uses: L1, L2, L3, recovery, filter/delay.
@@ -10,9 +13,9 @@ static const s32 k_defaults[BMS_PARAM_COUNT] = {
     4100, 4150, 4200, 4050, 100,
     /* CELL_UV */
     3000, 2900, 2700, 3050, 100,
-    /* BUS_OV - legacy semantics retained */
+    /* BUS_OV - legacy semantics retained; currently not enforced */
     4100, 4150, 4200, 4050, 100,
-    /* BUS_UV */
+    /* BUS_UV - legacy semantics retained; currently not enforced */
     3000, 2900, 2700, 3050, 100,
     /* CHG_OC: mA, mA, mA, mA, ms */
     10000, 15000, 20000, 10000, 500,
@@ -36,11 +39,15 @@ static const s32 k_defaults[BMS_PARAM_COUNT] = {
 
 static bms_param_value_t s_values[BMS_PARAM_COUNT];
 
-/* Static transaction scratch keeps the TC32 stack small. Parameter writes are
- * serialized by the bare-metal main loop / Modbus dispatcher.
+/* Static transaction/persistence scratch keeps the TC32 stack small. Parameter
+ * writes are serialized by the bare-metal main loop / Modbus dispatcher.
  */
 static s32 s_stage_requested[BMS_PARAM_COUNT];
 static s32 s_stage_effective[BMS_PARAM_COUNT];
+static u8 s_dirty;
+static u8 s_restore_accepted;
+static u8 s_restore_rejected;
+static u32 s_dirty_tick;
 
 static u16 param_group(u16 index)
 {
@@ -119,19 +126,27 @@ int bms_param_get_desc(u16 index, bms_param_desc_t *d)
     d->enforcement = BMS_PARAM_ENFORCE_NONE;
     d->quantize = BMS_PARAM_QUANTIZE_NEAREST;
     d->default_value = k_defaults[index];
-
     generic_limits(group, field, d);
 
-    /* The AFE adapter overrides only parameters with a direct, unambiguous
-     * hardware projection. A common parameter may exist while ACTIVE=0; that
-     * means the current firmware stores it but does not yet claim enforcement.
+    /* BUS_OV/BUS_UV legacy fields do not yet have an unambiguous product-level
+     * definition in this project, so keep them configurable but do not claim
+     * that they are enforced. Every other common group is enforced in software.
+     */
+    if (group != BMS_PARAM_GROUP_BUS_OV && group != BMS_PARAM_GROUP_BUS_UV) {
+        d->flags |= BMS_PARAM_FLAG_ACTIVE;
+        d->enforcement = BMS_PARAM_ENFORCE_SOFTWARE;
+    }
+
+    /* A direct AFE projection augments, rather than replaces, software policy.
+     * The adapter owns AFE-specific ranges/steps. For this board that currently
+     * means only CELL_OV_L3 and CELL_UV_L3.
      */
     if (bms_afe_get_param_limits(d->id, &afe_min, &afe_max, &afe_step)) {
         d->min_value = afe_min;
         d->max_value = afe_max;
         d->step = afe_step;
         d->flags |= BMS_PARAM_FLAG_ACTIVE;
-        d->enforcement = BMS_PARAM_ENFORCE_AFE;
+        d->enforcement = BMS_PARAM_ENFORCE_HYBRID;
 
         /* Hardware protection is quantized in the conservative direction. */
         if (d->id == BMS_PARAM_ID_CELL_OV_L3)
@@ -194,6 +209,12 @@ static int desc_has_afe_projection(const bms_param_desc_t *d)
            d->enforcement == BMS_PARAM_ENFORCE_HYBRID;
 }
 
+static void mark_dirty(void)
+{
+    s_dirty = 1u;
+    s_dirty_tick = clock_time();
+}
+
 /* Two-phase parameter transaction:
  * 1) validate/quantize every logical value;
  * 2) project all applicable values to hardware while RAM DB still contains the
@@ -206,6 +227,7 @@ static int commit_staged(u16 start_index, u16 count)
     u16 i;
     u16 j;
     u16 index;
+    u8 changed = 0u;
     bms_param_desc_t d;
     int rc;
 
@@ -216,6 +238,9 @@ static int commit_staged(u16 start_index, u16 count)
         index = (u16)(start_index + i);
         if (!prepare_value(index, s_stage_requested[i], &s_stage_effective[i]))
             return 0;
+        if (s_values[index].requested_value != s_stage_requested[i] ||
+            s_values[index].effective_value != s_stage_effective[i])
+            changed = 1u;
     }
 
     for (i = 0; i < count; ++i) {
@@ -243,6 +268,8 @@ static int commit_staged(u16 start_index, u16 count)
         s_values[index].requested_value = s_stage_requested[i];
         s_values[index].effective_value = s_stage_effective[i];
     }
+
+    if (changed) mark_dirty();
     return 1;
 }
 
@@ -253,7 +280,7 @@ static int set_by_index(u16 index, s32 requested)
     return commit_staged(index, 1u);
 }
 
-void bms_param_init(void)
+static void load_defaults(void)
 {
     u16 i;
     bms_param_desc_t d;
@@ -264,6 +291,69 @@ void bms_param_init(void)
         s_values[i].requested_value = d.default_value;
         s_values[i].effective_value = quantize_value(&d, d.default_value);
     }
+}
+
+void bms_param_init(void)
+{
+    u16 i;
+    s32 effective;
+    int loaded;
+
+    s_dirty = 0u;
+    s_restore_accepted = 0u;
+    s_restore_rejected = 0u;
+    s_dirty_tick = clock_time();
+    load_defaults();
+
+    loaded = bms_param_store_load(s_stage_requested, BMS_PARAM_COUNT,
+                                  BMS_PARAM_SCHEMA_VERSION);
+    if (!loaded) return;
+
+    /* A persisted record is accepted atomically only if every value still fits
+     * the current schema/AFE capability. This prevents a firmware/AFE change
+     * from partially restoring an incompatible protection set.
+     */
+    for (i = 0; i < BMS_PARAM_COUNT; ++i) {
+        if (!prepare_value(i, s_stage_requested[i], &s_stage_effective[i])) {
+            s_restore_rejected = 1u;
+            return;
+        }
+    }
+
+    for (i = 0; i < BMS_PARAM_COUNT; ++i) {
+        effective = s_stage_effective[i];
+        s_values[i].requested_value = s_stage_requested[i];
+        s_values[i].effective_value = effective;
+    }
+    s_restore_accepted = 1u;
+}
+
+void bms_param_process(void)
+{
+    u16 i;
+
+    if (!s_dirty) return;
+    if (!clock_time_exceed(s_dirty_tick, BMS_PARAM_SAVE_DELAY_US)) return;
+
+    for (i = 0; i < BMS_PARAM_COUNT; ++i)
+        s_stage_requested[i] = s_values[i].requested_value;
+
+    if (bms_param_store_save(s_stage_requested, BMS_PARAM_COUNT,
+                             BMS_PARAM_SCHEMA_VERSION)) {
+        s_dirty = 0u;
+    } else {
+        /* Retry later; never spin on a flash failure in the main loop. */
+        s_dirty_tick = clock_time();
+    }
+}
+
+u16 bms_param_persist_status_word(void)
+{
+    u16 st = bms_param_store_status_word();
+    if (s_dirty) st |= BMS_PARAM_PERSIST_ST_DIRTY;
+    if (s_restore_accepted) st |= BMS_PARAM_PERSIST_ST_RESTORE_ACCEPTED;
+    if (s_restore_rejected) st |= BMS_PARAM_PERSIST_ST_RESTORE_REJECTED;
+    return st;
 }
 
 int bms_param_apply_hardware_all(void)
@@ -407,8 +497,7 @@ int bms_param_write_value_block(u16 reg, u16 qty, const u16 *words)
 
     start_index = (u16)(rel / BMS_PARAM_VALUE_STRIDE);
     count = (u16)(qty / BMS_PARAM_VALUE_STRIDE);
-    if (count == 0u || (u32)start_index + count > BMS_PARAM_COUNT)
-        return 0;
+    if ((u32)start_index + count > BMS_PARAM_COUNT) return 0;
 
     for (i = 0; i < count; ++i)
         s_stage_requested[i] = pair_to_s32(words[i * 2u], words[i * 2u + 1u]);
@@ -452,9 +541,9 @@ u16 bms_param_read_cap_reg(u16 reg)
     u16 rel;
     u16 index;
     u16 field;
+    u16 packed_flags;
     bms_param_desc_t d;
     bms_param_value_t v;
-    u16 packed_flags;
 
     if (reg < BMS_PARAM_CAP_BASE || reg >= BMS_PARAM_CAP_BASE + BMS_PARAM_CAP_REG_COUNT)
         return 0u;
