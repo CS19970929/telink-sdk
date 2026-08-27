@@ -11,22 +11,6 @@ static bms_project_state_t g_bms;
 static u32 s_afe_poll_tick;
 static u8 s_afe_fail_count;
 
-static const u16 k_default_protect[BMS_PROTECT_REG_COUNT] = {
-    4100, 4150, 4200, 4050, 100,
-    3000, 2900, 2700, 3050, 100,
-    4100, 4150, 4200, 4050, 100,
-    3000, 2900, 2700, 3050, 100,
-    100, 150, 200, 100, 500,
-    100, 150, 200, 100, 500,
-    800, 900, 950, 900, 100,
-    450, 430, 400, 450, 100,
-    900, 950, 1000, 900, 100,
-    300, 250, 200, 300, 100,
-    1150, 1250, 1350, 1200, 100,
-    600, 800, 1000, 800, 100,
-    20, 10, 5, 11, 100
-};
-
 static void board_gpio_init(void)
 {
     const GPIO_PinTypeDef outputs[] = {
@@ -53,18 +37,15 @@ static void board_gpio_init(void)
     gpio_set_output_en(BMS_CMNT_WAKE_PIN, 0);
 }
 
-static int afe_apply_project_limits(void)
-{
-    if (sh3673510_set_ov_mv(g_bms.protect[2]) != 0) return -1;
-    if (sh3673510_set_uv_mv(g_bms.protect[7]) != 0) return -2;
-    return 0;
-}
-
 static int afe_start(void)
 {
-    int rc = sh3673510_init();
+    int rc = bms_afe_init();
     if (rc != 0) return rc;
-    rc = afe_apply_project_limits();
+
+    /* AFE registers are a runtime projection of the common parameter DB.
+     * Re-apply them after every AFE reset/re-initialization.
+     */
+    rc = bms_param_apply_hardware_all();
     if (rc != 0) return -20 + rc;
     return 0;
 }
@@ -75,7 +56,6 @@ void bms_project_init(void)
     u8 mac_random_static[6];
 
     memset(&g_bms, 0, sizeof(g_bms));
-    memcpy(g_bms.protect, k_default_protect, sizeof(g_bms.protect));
     g_bms.soh = 100u;
 
     board_gpio_init();
@@ -90,6 +70,10 @@ void bms_project_init(void)
 
     bms_ble_compat_apply();
 
+    /* Common logical parameters are initialized before the AFE so the selected
+     * adapter can project the effective hardware values during afe_start().
+     */
+    bms_param_init();
     rc = afe_start();
     g_bms.afe_last_error = (s16)rc;
     g_bms.afe_init_ok = (rc == 0) ? 1u : 0u;
@@ -106,7 +90,7 @@ void bms_project_process(void)
 
     if (clock_time_exceed(s_afe_poll_tick, BMS_AFE_POLL_PERIOD_US)) {
         s_afe_poll_tick = clock_time();
-        rc = sh3673510_sample(&g_bms.afe);
+        rc = bms_afe_sample(&g_bms.afe);
         if (rc != 0) {
             g_bms.afe.online = 0u;
             g_bms.afe_last_error = (s16)rc;
@@ -139,7 +123,7 @@ const bms_project_state_t *bms_project_get_state(void)
 static u16 legacy_temp(u8 index)
 {
     s16 t;
-    if (index >= 4u) return 0u;
+    if (index >= BMS_AFE_TEMP_CHANNELS) return 0u;
     t = g_bms.afe.temp_dC[index] + 400;
     if (t < 0) t = 0;
     return (u16)t;
@@ -148,32 +132,37 @@ static u16 legacy_temp(u8 index)
 static u16 legacy_fault_word(void)
 {
     u16 f = 0;
-    if (g_bms.afe.flag1 & BIT(0)) f |= BIT(0);
-    if (g_bms.afe.flag1 & BIT(1)) f |= BIT(1);
-    if (g_bms.afe.flag1 & BIT(5)) f |= BIT(4);
-    if (g_bms.afe.flag1 & (BIT(2) | BIT(3) | BIT(4))) f |= BIT(5);
-    if (g_bms.afe.flag2 & BIT(5)) f |= BIT(6);
-    if (g_bms.afe.flag2 & BIT(7)) f |= BIT(7);
-    if (g_bms.afe.flag2 & BIT(4)) f |= BIT(8);
-    if (g_bms.afe.flag2 & BIT(6)) f |= BIT(9);
+    u32 af = g_bms.afe.fault_bits;
+
+    if (af & BMS_AFE_FAULT_CELL_OV) f |= BIT(0);
+    if (af & BMS_AFE_FAULT_CELL_UV) f |= BIT(1);
+    if (af & BMS_AFE_FAULT_CHG_OC) f |= BIT(4);
+    if (af & (BMS_AFE_FAULT_DSG_OC1 | BMS_AFE_FAULT_DSG_OC2 | BMS_AFE_FAULT_SHORT)) f |= BIT(5);
+    if (af & BMS_AFE_FAULT_CHG_OT) f |= BIT(6);
+    if (af & BMS_AFE_FAULT_DSG_OT) f |= BIT(7);
+    if (af & BMS_AFE_FAULT_CHG_UT) f |= BIT(8);
+    if (af & BMS_AFE_FAULT_DSG_UT) f |= BIT(9);
     return f;
 }
 
 u16 bms_project_read_legacy_d000(u16 offset)
 {
     s32 ma;
+    u8 cells = g_bms.afe.cell_count;
+
+    if (cells > BMS_AFE_MAX_CELLS) cells = BMS_AFE_MAX_CELLS;
     if (offset < 32u)
-        return (offset < BMS_CELL_COUNT) ? g_bms.afe.cell_mv[offset] : 0u;
+        return (offset < cells) ? g_bms.afe.cell_mv[offset] : 0u;
 
     switch (offset) {
     case 32: return g_bms.afe.cell_max_mv;
     case 33: return g_bms.afe.cell_min_mv;
     case 34: {
-        u8 i; for (i = 0; i < BMS_CELL_COUNT; ++i) if (g_bms.afe.cell_mv[i] == g_bms.afe.cell_max_mv) return (u16)(i + 1u);
+        u8 i; for (i = 0; i < cells; ++i) if (g_bms.afe.cell_mv[i] == g_bms.afe.cell_max_mv) return (u16)(i + 1u);
         return 0;
     }
     case 35: {
-        u8 i; for (i = 0; i < BMS_CELL_COUNT; ++i) if (g_bms.afe.cell_mv[i] == g_bms.afe.cell_min_mv) return (u16)(i + 1u);
+        u8 i; for (i = 0; i < cells; ++i) if (g_bms.afe.cell_mv[i] == g_bms.afe.cell_min_mv) return (u16)(i + 1u);
         return 0;
     }
     case 36: return g_bms.afe.cell_delta_mv;
@@ -214,16 +203,17 @@ u16 bms_project_read_legacy_d000(u16 offset)
 
 u16 bms_project_read_protect(u16 offset)
 {
-    return (offset < BMS_PROTECT_REG_COUNT) ? g_bms.protect[offset] : 0u;
+    return bms_param_read_legacy(offset);
 }
 
 int bms_project_write_protect(u16 offset, u16 value)
 {
-    if (offset >= BMS_PROTECT_REG_COUNT) return 0;
-    g_bms.protect[offset] = value;
-    if (offset == 2u) return sh3673510_set_ov_mv(value) == 0;
-    if (offset == 7u) return sh3673510_set_uv_mv(value) == 0;
-    return 1;
+    return bms_param_write_legacy(offset, value);
+}
+
+int bms_project_write_protect_block(u16 offset, u16 qty, const u16 *values)
+{
+    return bms_param_write_legacy_block(offset, qty, values);
 }
 
 void bms_project_set_soc(u16 soc)
@@ -235,11 +225,11 @@ int bms_project_command(u16 value)
 {
     switch (value) {
     case 0x0010u:
-        return sh3673510_clear_flags(0x3Fu, 0xF8u) == 0;
+        return bms_afe_clear_faults(BMS_AFE_FAULT_ALL) == 0;
     case 0x0011u:
-        return sh3673510_set_mos(1u, 1u) == 0;
+        return bms_afe_set_mos(1u, 1u) == 0;
     case 0x0012u:
-        return sh3673510_set_mos(0u, 0u) == 0;
+        return bms_afe_set_mos(0u, 0u) == 0;
     default:
         return 1;
     }
