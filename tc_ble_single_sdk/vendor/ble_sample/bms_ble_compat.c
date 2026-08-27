@@ -20,27 +20,31 @@ void bms_ble_refresh_name(void)
 {
     const char *name = btname_get();
     u8 n = (u8)strlen(name);
-    if (n > 25u) n = 25u;
+    if (n > (BTNAME_TOTAL_MAX_LEN - 1u)) n = BTNAME_TOTAL_MAX_LEN - 1u;
 
     memset(my_devName, 0, BTNAME_TOTAL_MAX_LEN);
     memcpy(my_devName, name, n);
 
     s_scan[0] = (u8)(n + 1u);
-    s_scan[1] = 0x09u;
+    s_scan[1] = 0x09u; /* Complete Local Name */
     memcpy(&s_scan[2], name, n);
     s_scan_len = (u8)(n + 2u);
-    bls_ll_setScanRspData(s_scan, s_scan_len);
+    (void)bls_ll_setScanRspData(s_scan, s_scan_len);
 }
 
 void bms_ble_compat_apply(void)
 {
-    /* Values intentionally match the established Telink BMS branch. */
+    /* user_init_normal() has already enabled advertising. Stop it while replacing
+     * parameters so bls_ll_setAdvParam is not rejected by the LL state machine.
+     * 0/1 are the BLE Advertising_Enable command values.
+     */
+    (void)bls_ll_setAdvEnable(0);
     (void)bls_ll_setAdvParam(ADV_INTERVAL_800MS, ADV_INTERVAL_800MS,
                              ADV_TYPE_CONNECTABLE_UNDIRECTED,
                              app_own_address_type, 0, 0,
                              BLT_ENABLE_ADV_ALL, ADV_FP_NONE);
-    bls_ll_setAdvData(s_adv, sizeof(s_adv));
+    (void)bls_ll_setAdvData(s_adv, sizeof(s_adv));
     bms_ble_refresh_name();
     rf_set_power_level_index(RF_POWER_P3dBm);
-    bls_ll_setAdvEnable(BLC_ADV_ENABLE);
+    (void)bls_ll_setAdvEnable(1);
 }
