@@ -3,10 +3,12 @@
 #include "modbus_uart.h"
 #include "btname_modbus.h"
 #include "bms_ble_compat.h"
+#include "stack/ble/ble.h"
 #include <string.h>
 
 static bms_project_state_t g_bms;
 static u32 s_afe_poll_tick;
+static u8 s_afe_fail_count;
 
 static const u16 k_default_protect[BMS_PROTECT_REG_COUNT] = {
     /* 0x2100: Vcell OVP: L1,L2,L3,recover,filter(ms) */
@@ -63,6 +65,25 @@ static void board_gpio_init(void)
     gpio_set_output_en(BMS_CMNT_WAKE_PIN, 0);
 }
 
+static int afe_apply_project_limits(void)
+{
+    /* The legacy protocol table is retained. Only values whose AFE mapping is
+     * unambiguous are applied to hardware at this stage.
+     */
+    if (sh3673510_set_ov_mv(g_bms.protect[2]) != 0) return -1;
+    if (sh3673510_set_uv_mv(g_bms.protect[7]) != 0) return -2;
+    return 0;
+}
+
+static int afe_start(void)
+{
+    int rc = sh3673510_init();
+    if (rc != 0) return rc;
+    rc = afe_apply_project_limits();
+    if (rc != 0) return -20 + rc;
+    return 0;
+}
+
 void bms_project_init(void)
 {
     int rc;
@@ -73,19 +94,16 @@ void bms_project_init(void)
     board_gpio_init();
     btname_init();
     btname_set_refresh_callback(bms_ble_refresh_name);
+
+    /* Preserve the old 0x0000..0x0002 Modbus MAC slots. */
+    (void)blc_ll_readBDAddr(g_bms.mac_public);
+
     bms_ble_compat_apply();
 
-    rc = sh3673510_init();
+    rc = afe_start();
     g_bms.afe_last_error = (s16)rc;
     g_bms.afe_init_ok = (rc == 0) ? 1u : 0u;
-    if (g_bms.afe_init_ok) {
-        /* Use the third-level legacy values as the AFE hard protection limits. */
-        if (sh3673510_set_ov_mv(g_bms.protect[2]) != 0 ||
-            sh3673510_set_uv_mv(g_bms.protect[7]) != 0) {
-            g_bms.afe_init_ok = 0u;
-            g_bms.afe_last_error = -20;
-        }
-    }
+    s_afe_fail_count = 0u;
 
     modbus_uart_init();
     s_afe_poll_tick = clock_time();
@@ -102,8 +120,19 @@ void bms_project_process(void)
         if (rc != 0) {
             g_bms.afe.online = 0u;
             g_bms.afe_last_error = (s16)rc;
+            if (s_afe_fail_count < 0xFFu) ++s_afe_fail_count;
+
+            /* Recover a reset/noisy AFE without rebooting the BLE/Modbus MCU. */
+            if (s_afe_fail_count >= 10u) {
+                rc = afe_start();
+                g_bms.afe_init_ok = (rc == 0) ? 1u : 0u;
+                g_bms.afe_last_error = (s16)rc;
+                s_afe_fail_count = 0u;
+            }
         } else {
+            g_bms.afe_init_ok = 1u;
             g_bms.afe_last_error = 0;
+            s_afe_fail_count = 0u;
         }
     }
 }
@@ -134,7 +163,7 @@ static u16 legacy_fault_word(void)
     if (g_bms.afe.flag1 & BIT(1)) f |= BIT(1);  /* cell UVP */
     if (g_bms.afe.flag1 & BIT(5)) f |= BIT(4);  /* OCC */
     if (g_bms.afe.flag1 & (BIT(2) | BIT(3) | BIT(4))) f |= BIT(5); /* OCD/SC */
-    if (g_bms.afe.flag2 & BIT(3)) f |= BIT(6);  /* charge OTP */
+    if (g_bms.afe.flag2 & BIT(5)) f |= BIT(6);  /* charge OTP */
     if (g_bms.afe.flag2 & BIT(7)) f |= BIT(7);  /* discharge OTP */
     if (g_bms.afe.flag2 & BIT(4)) f |= BIT(8);  /* charge UTP */
     if (g_bms.afe.flag2 & BIT(6)) f |= BIT(9);  /* discharge UTP */
