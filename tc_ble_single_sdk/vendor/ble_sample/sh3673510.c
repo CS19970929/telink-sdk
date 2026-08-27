@@ -1,0 +1,326 @@
+#include "sh3673510.h"
+#include <string.h>
+
+#define SH_CMD_WRITE       0x01u
+#define SH_CMD_READ        0x02u
+#define SH_CMD_SOFT_RESET  0x0Bu
+#define SH_ACK             0xA5u
+
+#define SCONF2_LTCLR       BIT(7)
+#define SCONF2_PUMP_EN     BIT(4)
+#define SCONF2_DSGMOS      BIT(1)
+#define SCONF2_CHGMOS      BIT(0)
+#define SCONF5_MOS_EN      BIT(5)
+#define SCONF5_OCC_EN      BIT(4)
+#define SCONF5_CADC_EN     BIT(3)
+#define SCONF5_WDT_EN      BIT(2)
+
+static u8 sh_crc8_update(u8 crc, u8 data)
+{
+    u8 i;
+    crc ^= data;
+    for (i = 0; i < 8; ++i) {
+        crc = (crc & 0x80u) ? (u8)((crc << 1) ^ 0x07u) : (u8)(crc << 1);
+    }
+    return crc;
+}
+
+static u8 sh_crc8(const u8 *p, u8 len)
+{
+    u8 crc = 0;
+    while (len--) {
+        crc = sh_crc8_update(crc, *p++);
+    }
+    return crc;
+}
+
+static u16 be16(const u8 *p)
+{
+    return (u16)(((u16)p[0] << 8) | p[1]);
+}
+
+void sh3673510_spi_init(void)
+{
+    /* RESET from SH3673510 is an open-drain OUTPUT to the MCU; never drive it. */
+    gpio_set_func(BMS_AFE_RESET_PIN, AS_GPIO);
+    gpio_set_input_en(BMS_AFE_RESET_PIN, 1);
+    gpio_set_output_en(BMS_AFE_RESET_PIN, 0);
+
+    gpio_set_func(BMS_AFE_ALARM_PIN, AS_GPIO);
+    gpio_set_input_en(BMS_AFE_ALARM_PIN, 1);
+    gpio_set_output_en(BMS_AFE_ALARM_PIN, 0);
+
+    spi_master_gpio_set(BMS_AFE_SPI_GROUP);
+    spi_masterCSpin_select(BMS_AFE_CS_PIN);
+
+    /* 16 MHz / ((7 + 1) * 2) = 1 MHz, SH3673510 requires CPOL=1/CPHA=1. */
+    spi_master_init(7, SPI_MODE3);
+}
+
+int sh3673510_read(u8 reg, u8 *data, u8 len)
+{
+    u8 cmd[3];
+    u8 rx[34];
+    u8 crc;
+    u8 i;
+
+    if (!data || !len || len > 32u || reg < 0x40u || (u16)reg + len - 1u > 0x99u) {
+        return -1;
+    }
+
+    cmd[0] = SH_CMD_READ;
+    cmd[1] = reg;
+    cmd[2] = len;
+    memset(rx, 0, sizeof(rx));
+
+    /* IC returns one 0xFF lead byte, N data bytes and CRC8 with CS held low. */
+    spi_read(cmd, 3, rx, (int)len + 2, BMS_AFE_CS_PIN);
+    if (rx[0] != 0xFFu) {
+        return -2;
+    }
+
+    crc = 0;
+    crc = sh_crc8_update(crc, 0xFFu);
+    crc = sh_crc8_update(crc, SH_CMD_READ);
+    crc = sh_crc8_update(crc, reg);
+    crc = sh_crc8_update(crc, len);
+    for (i = 0; i < len; ++i) {
+        crc = sh_crc8_update(crc, rx[1u + i]);
+        data[i] = rx[1u + i];
+    }
+    if (crc != rx[1u + len]) {
+        return -3;
+    }
+    return 0;
+}
+
+int sh3673510_write(u8 reg, u8 data)
+{
+    u8 frame[5];
+    u8 ack = 0;
+
+    if (reg < 0x40u || reg > 0x59u) {
+        return -1;
+    }
+
+    frame[0] = SH_CMD_WRITE;
+    frame[1] = reg;
+    frame[2] = 1u;
+    frame[3] = data;
+    frame[4] = sh_crc8(frame, 4);
+    spi_read(frame, 5, &ack, 1, BMS_AFE_CS_PIN);
+    return (ack == SH_ACK) ? 0 : -2;
+}
+
+int sh3673510_soft_reset(void)
+{
+    u8 frame[4];
+    u8 ack = 0;
+
+    frame[0] = SH_CMD_SOFT_RESET;
+    frame[1] = 0xBBu;
+    frame[2] = 0xCCu;
+    frame[3] = sh_crc8(frame, 3);
+    spi_read(frame, 4, &ack, 1, BMS_AFE_CS_PIN);
+    if (ack != SH_ACK) {
+        return -1;
+    }
+    sleep_us(5000);
+    return 0;
+}
+
+static int sh_set_cell_count_10s(void)
+{
+    u8 v;
+    if (sh3673510_read(SH3673510_REG_SCONF4, &v, 1)) return -1;
+    v = (u8)((v & 0xE0u) | 10u); /* CN[4:0]=01010 for SH3673510 10S. */
+    return sh3673510_write(SH3673510_REG_SCONF4, v);
+}
+
+int sh3673510_init(void)
+{
+    u8 v;
+    u8 sconf6 = 0x0Fu; /* OV/UV/OCD/SC */
+
+    sh3673510_spi_init();
+    sleep_us(3000);
+
+    if (sh3673510_soft_reset()) return -1;
+    if (sh_set_cell_count_10s()) return -2;
+
+    if (sh3673510_read(SH3673510_REG_SCONF5, &v, 1)) return -3;
+    v |= (SCONF5_MOS_EN | SCONF5_OCC_EN | SCONF5_CADC_EN);
+    v &= (u8)~SCONF5_WDT_EN; /* MCU watchdog is used; AFE WDT stays explicit/off for now. */
+    if (sh3673510_write(SH3673510_REG_SCONF5, v)) return -4;
+
+#if BMS_AFE_TS1_ENABLE
+    sconf6 |= BIT(4);
+#endif
+#if BMS_AFE_TS2_ENABLE
+    sconf6 |= BIT(5);
+#endif
+#if BMS_AFE_TS3_ENABLE
+    sconf6 |= BIT(6);
+#endif
+#if BMS_AFE_TS4_ENABLE
+    sconf6 |= BIT(7);
+#endif
+    if (sh3673510_write(SH3673510_REG_SCONF6, sconf6)) return -5;
+
+    /* Alarm pulse on the protection sources actually used by this board. */
+    if (sh3673510_write(SH3673510_REG_ALARML, 0x1Fu)) return -6;
+
+    /* Never enable balancing implicitly at boot. */
+    if (sh3673510_write(SH3673510_REG_BAL_H, 0x00u)) return -7;
+    if (sh3673510_write(SH3673510_REG_BAL_M, 0x00u)) return -8;
+    if (sh3673510_write(SH3673510_REG_BAL_L, 0x00u)) return -9;
+
+    /* Charge pump on, both MOS requests on. Hardware protections retain veto. */
+    if (sh3673510_read(SH3673510_REG_SCONF2, &v, 1)) return -10;
+    v |= (SCONF2_PUMP_EN | SCONF2_CHGMOS | SCONF2_DSGMOS);
+    if (sh3673510_write(SH3673510_REG_SCONF2, v)) return -11;
+
+    return 0;
+}
+
+int sh3673510_set_mos(u8 charge_on, u8 discharge_on)
+{
+    u8 v;
+    if (sh3673510_read(SH3673510_REG_SCONF2, &v, 1)) return -1;
+    v |= SCONF2_PUMP_EN;
+    if (charge_on) v |= SCONF2_CHGMOS; else v &= (u8)~SCONF2_CHGMOS;
+    if (discharge_on) v |= SCONF2_DSGMOS; else v &= (u8)~SCONF2_DSGMOS;
+    return sh3673510_write(SH3673510_REG_SCONF2, v);
+}
+
+int sh3673510_set_balance_mask(u16 mask)
+{
+    /* SH3673510 has 10 cells: CB10..CB1 map into BALANCEM[1:0], BALANCEL[7:0]. */
+    mask &= 0x03FFu;
+    if (sh3673510_write(SH3673510_REG_BAL_H, 0)) return -1;
+    if (sh3673510_write(SH3673510_REG_BAL_M, (u8)(mask >> 8))) return -2;
+    return sh3673510_write(SH3673510_REG_BAL_L, (u8)mask);
+}
+
+static int sh_set_voltage_threshold(u8 regh, u8 regl, u16 mv)
+{
+    u16 code;
+    u8 h;
+    code = (u16)(mv / 5u);
+    if (code > 1023u) code = 1023u;
+    if (sh3673510_read(regh, &h, 1)) return -1;
+    h = (u8)((h & 0xF0u) | ((code >> 8) & 0x03u));
+    if (sh3673510_write(regh, h)) return -2;
+    return sh3673510_write(regl, (u8)code);
+}
+
+int sh3673510_set_ov_mv(u16 mv)
+{
+    return sh_set_voltage_threshold(SH3673510_REG_OVH, SH3673510_REG_OVL, mv);
+}
+
+int sh3673510_set_uv_mv(u16 mv)
+{
+    return sh_set_voltage_threshold(SH3673510_REG_UVH, SH3673510_REG_UVL, mv);
+}
+
+static int sh_clear_one_flag_reg(u8 flag_reg, u8 clear_mask)
+{
+    u8 sconf2;
+    u8 flags;
+    if (!clear_mask) return 0;
+    if (sh3673510_read(flag_reg, &flags, 1)) return -1;
+    if (sh3673510_read(SH3673510_REG_SCONF2, &sconf2, 1)) return -2;
+    if (sh3673510_write(SH3673510_REG_SCONF2, (u8)(sconf2 | SCONF2_LTCLR))) return -3;
+    flags &= (u8)~clear_mask;
+    return sh3673510_write(flag_reg, flags);
+}
+
+int sh3673510_clear_flags(u8 flag1_mask, u8 flag2_mask)
+{
+    if (sh_clear_one_flag_reg(SH3673510_REG_FLAG1, flag1_mask)) return -1;
+    if (sh_clear_one_flag_reg(SH3673510_REG_FLAG2, flag2_mask)) return -2;
+    return 0;
+}
+
+static u32 sh_ts_to_ohm(u16 code)
+{
+    if (code >= 32768u) return 0xFFFFFFFFu;
+    return (u32)(((u32)10000u * code) / (32768u - code));
+}
+
+static s16 sh_ntc3435_to_dC(u32 ohm)
+{
+    static const u32 rtab[] = {
+        248277u, 135452u, 77523u, 46290u, 28704u, 18410u, 12171u, 8269u,
+        5759u, 4101u, 2981u, 2207u, 1662u, 1272u, 987u
+    };
+    u8 i;
+    if (ohm >= rtab[0]) return -400;
+    if (ohm <= rtab[14]) return 1000;
+    for (i = 0; i < 14; ++i) {
+        if (ohm <= rtab[i] && ohm >= rtab[i + 1]) {
+            u32 span = rtab[i] - rtab[i + 1];
+            u32 pos = rtab[i] - ohm;
+            return (s16)(-400 + (s16)i * 100 + (s16)((pos * 100u) / span));
+        }
+    }
+    return 0;
+}
+
+int sh3673510_sample(sh3673510_sample_t *s)
+{
+    u8 status[15];  /* 0x58..0x66 */
+    u8 cur[2];
+    u8 cells[BMS_CELL_COUNT * 2u];
+    u8 high[6];     /* CADC,VTOP,VCHGR */
+    u8 i;
+    u16 raw;
+    u32 sum = 0;
+
+    if (!s) return -1;
+    memset(s, 0, sizeof(*s));
+
+    if (sh3673510_read(SH3673510_REG_FLAG1, status, sizeof(status))) return -2;
+    if (sh3673510_read(SH3673510_REG_CUR_H, cur, 2)) return -3;
+    if (sh3673510_read(SH3673510_REG_CELL1_H, cells, sizeof(cells))) return -4;
+    if (sh3673510_read(SH3673510_REG_CADC_H, high, sizeof(high))) return -5;
+
+    s->flag1 = status[0];
+    s->flag2 = status[1];
+    s->flag3 = status[2];
+    s->bstatus1 = status[3];
+    s->bstatus2 = status[4];
+
+    for (i = 0; i < 4; ++i) {
+        s->ts_raw[i] = be16(&status[5u + i * 2u]);
+        s->ts_ohm[i] = sh_ts_to_ohm(s->ts_raw[i]);
+        s->temp_dC[i] = sh_ntc3435_to_dC(s->ts_ohm[i]);
+    }
+
+    s->cell_min_mv = 0xFFFFu;
+    for (i = 0; i < BMS_CELL_COUNT; ++i) {
+        raw = be16(&cells[i * 2u]);
+        s->cell_mv[i] = (u16)(((u32)raw * 5u) / 32u);
+        sum += s->cell_mv[i];
+        if (s->cell_mv[i] < s->cell_min_mv) s->cell_min_mv = s->cell_mv[i];
+        if (s->cell_mv[i] > s->cell_max_mv) s->cell_max_mv = s->cell_mv[i];
+    }
+    s->pack_mv = sum;
+    s->cell_delta_mv = (u16)(s->cell_max_mv - s->cell_min_mv);
+
+    s->current_raw = (s16)be16(cur);
+#if (BMS_RSENSE_UOHM > 0)
+    s->current_ma = (s32)(((s64)100000000L * s->current_raw) /
+                          ((s64)29127L * BMS_RSENSE_UOHM));
+    s->current_ma_valid = 1u;
+#else
+    s->current_ma = 0;
+    s->current_ma_valid = 0u;
+#endif
+
+    s->vtop_mv = (u16)(((u32)be16(&high[2]) * 125u) / 32u);
+    s->vchgr_mv = (u16)(((u32)be16(&high[4]) * 125u) / 32u);
+    s->online = 1u;
+    return 0;
+}
