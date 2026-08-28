@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """HS-D011 / TLSR8251 command-line build entry point.
 
-The build intentionally mirrors the repository's existing Telink Eclipse
-825x_ble_sample configuration. It does not depend on opening Telink IDE or on
-IDE-generated makefiles.
+The build keeps the repository's Telink 825x_ble_sample C ABI/link contract,
+but uses the startup SRAM profile for the actual TLSR8251 device. It does not
+depend on opening Telink IDE or on IDE-generated makefiles.
 
 Typical use:
     python bms_tools/bms.py env
@@ -41,6 +41,7 @@ MAP = GEN_DIR / "825x_ble_sample.map"
 MANIFEST = BUILD_DIR / "fw_manifest.json"
 SOURCE_ORDER_FILE = HERE / "source_order.txt"
 BUILD_MK = HERE / "build.mk"
+STARTUP_FILE = SDK_DIR / "boot" / "B85" / "cstartup_825x.S"
 
 TL_CHECK_DIR = SDK_DIR / "script" / "tl_check_fw"
 TL_CHECK_WIN = TL_CHECK_DIR / "tl_check_fw2.exe"
@@ -68,6 +69,13 @@ SOURCE_GROUPS = (
 
 DEFAULT_TC32_DIR = Path(r"C:\TelinkIoTStudio\opt\tc32\bin")
 DEFAULT_MAKE = Path(r"C:\qp\qtools\bin\make.exe")
+
+TARGET_MCU = "TLSR8251F512"
+STARTUP_PROFILE = "MCU_STARTUP_8251"
+SRAM_BASE = 0x840000
+SRAM_BYTES = 0x8000
+SRAM_END = SRAM_BASE + SRAM_BYTES
+MAIN_STACK_GUARD_BYTES = 600
 
 
 def info(msg: str) -> None:
@@ -151,6 +159,30 @@ def find_make() -> str:
         return str(DEFAULT_MAKE)
     die("GNU Make not found. Install make or set MAKE; qtools fallback is also missing.")
     return ""
+
+
+def validate_target_contract() -> None:
+    if not BUILD_MK.exists():
+        die(f"build driver missing: {BUILD_MK}")
+    if not STARTUP_FILE.exists():
+        die(f"startup source missing: {STARTUP_FILE}")
+
+    build_text = BUILD_MK.read_text(encoding="utf-8", errors="replace")
+    startup_text = STARTUP_FILE.read_text(encoding="utf-8", errors="replace")
+
+    if "AFLAGS_BASE := -DMCU_STARTUP_8251" not in build_text:
+        die("build.mk is not selecting MCU_STARTUP_8251")
+    if "AFLAGS_BASE := -DMCU_STARTUP_8258" in build_text:
+        die("build.mk still contains an active MCU_STARTUP_8258 startup selection")
+
+    required_startup_fragments = (
+        "#elif (MCU_STARTUP_8251)",
+        "SRAM_BASE_ADDR + SRAM_32K",
+        ".word\t(SRAM_SIZE)",
+    )
+    missing = [item for item in required_startup_fragments if item not in startup_text]
+    if missing:
+        die("unexpected cstartup_825x.S layout; missing: " + ", ".join(missing))
 
 
 def discover_sources() -> list[str]:
@@ -249,6 +281,7 @@ def generate_sources_mk(order: list[str]) -> None:
 
 
 def run_make(jobs: int) -> None:
+    validate_target_contract()
     order = validate_source_order()
     generate_sources_mk(order)
     env = toolchain_env()
@@ -269,7 +302,7 @@ def run_make(jobs: int) -> None:
         "BUILD_DIR=tc_ble_single_sdk/project/tlsr_tc32/B85/825x_ble_sample_cli",
         "all",
     ]
-    info("starting TC32 build without Telink IDE")
+    info(f"starting TC32 build without Telink IDE ({TARGET_MCU}, {STARTUP_PROFILE})")
     result = subprocess.run(cmd, cwd=REPO_ROOT, env=env, check=False)
     if result.returncode != 0:
         die(f"build failed, make exit code={result.returncode}", result.returncode)
@@ -314,17 +347,63 @@ def git_head() -> str | None:
         return None
 
 
+def map_symbol_value(text: str, symbol: str) -> int | None:
+    patterns = (
+        rf"^\s*(0x[0-9a-fA-F]+)\s+{re.escape(symbol)}\b",
+        rf"\b{re.escape(symbol)}\b\s*=\s*(0x[0-9a-fA-F]+)",
+        rf"\b{re.escape(symbol)}\b.*?(0x[0-9a-fA-F]+)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, re.M)
+        if match:
+            return int(match.group(1), 16)
+    return None
+
+
+def validate_map_sram() -> None:
+    if not MAP.exists():
+        die(f"MAP missing after link: {MAP}")
+    text = MAP.read_text(encoding="utf-8", errors="replace")
+    ram_end = map_symbol_value(text, "_ram_use_end_")
+    linked_sram_end = map_symbol_value(text, "__SRAM_SIZE")
+
+    if linked_sram_end is not None and linked_sram_end != SRAM_END:
+        die(
+            f"linked __SRAM_SIZE=0x{linked_sram_end:06X}, expected TLSR8251 end 0x{SRAM_END:06X}"
+        )
+
+    if ram_end is not None:
+        limit = SRAM_END - MAIN_STACK_GUARD_BYTES
+        if ram_end >= limit:
+            die(
+                f"RAM overflow/stack margin violation: _ram_use_end_=0x{ram_end:06X}, "
+                f"limit=0x{limit:06X}"
+            )
+        info(
+            f"TLSR8251 SRAM check: ram_use_end=0x{ram_end:06X}, "
+            f"stack/headroom={SRAM_END - ram_end} bytes"
+        )
+    else:
+        info("TLSR8251 SRAM check: linker ASSERT active; MAP symbol parser did not locate _ram_use_end_")
+
+
 def write_manifest() -> None:
     if not BIN.exists() or not ELF.exists():
         die("build artifacts missing; run build/rebuild first")
     order = validate_source_order(verbose=False)
-    inputs = [BUILD_MK, SOURCE_ORDER_FILE, LINKER_FILE, *VENDOR_LIBS]
+    inputs = [BUILD_MK, SOURCE_ORDER_FILE, LINKER_FILE, STARTUP_FILE, *VENDOR_LIBS]
     manifest = {
-        "format": 1,
+        "format": 2,
         "generated_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "git_head": git_head(),
-        "target": "TLSR8251 / B85 / 825x_ble_sample",
-        "startup_profile": "MCU_STARTUP_8258 (preserved from current Eclipse config)",
+        "target": f"{TARGET_MCU} / B85 / 825x_ble_sample",
+        "startup_profile": STARTUP_PROFILE,
+        "sram": {
+            "base": f"0x{SRAM_BASE:06X}",
+            "size_bytes": SRAM_BYTES,
+            "end_exclusive": f"0x{SRAM_END:06X}",
+            "linker_stack_guard_bytes": MAIN_STACK_GUARD_BYTES,
+        },
         "source_count": len(order),
         "source_order_sha256": hashlib.sha256(("\n".join(order) + "\n").encode()).hexdigest(),
         "artifacts": {
@@ -364,9 +443,11 @@ def verify_manifest() -> None:
 
 def cmd_env(_: argparse.Namespace) -> int:
     env = toolchain_env()
+    validate_target_contract()
     print(f"repo              : {REPO_ROOT}")
     print(f"sdk               : {SDK_DIR} (exists={SDK_DIR.exists()})")
     print(f"linker            : {LINKER_FILE} (exists={LINKER_FILE.exists()})")
+    print(f"startup           : {STARTUP_FILE} (exists={STARTUP_FILE.exists()})")
     print(f"build output      : {BUILD_DIR}")
     for lib in VENDOR_LIBS:
         print(f"vendor library    : {lib} (exists={lib.exists()})")
@@ -378,8 +459,11 @@ def cmd_env(_: argparse.Namespace) -> int:
     print(f"tc32-elf-gcc      : {gcc}")
     print(f"compiler version  : {command_version([gcc, '--version'])}")
     validate_source_order()
-    print("startup profile   : MCU_STARTUP_8258 (intentionally preserved from current Eclipse config)")
-    print("note              : changing startup/SRAM profile is NOT part of this migration")
+    print(f"target MCU        : {TARGET_MCU}")
+    print(f"startup profile   : {STARTUP_PROFILE}")
+    print(f"SRAM              : 0x{SRAM_BASE:06X}..0x{SRAM_END - 1:06X} ({SRAM_BYTES // 1024} KiB)")
+    print(f"main SP after reset: 0x{SRAM_END:06X}")
+    print(f"linker RAM guard  : _ram_use_end_ < 0x{SRAM_END - MAIN_STACK_GUARD_BYTES:06X}")
     return 0
 
 
@@ -396,6 +480,7 @@ def do_build(jobs: int, clean: bool) -> None:
         info(f"removing previous CLI output: {BUILD_DIR}")
         shutil.rmtree(BUILD_DIR)
     run_make(jobs)
+    validate_map_sram()
     finalize_firmware()
     write_manifest()
     info(f"ELF : {ELF}")
@@ -417,6 +502,7 @@ def cmd_rebuild(args: argparse.Namespace) -> int:
 def cmd_check_fw(_: argparse.Namespace) -> int:
     if not RAW_BIN.exists():
         die("raw BIN missing; run build/rebuild first")
+    validate_map_sram()
     finalize_firmware()
     write_manifest()
     info("official firmware post-check PASS")
@@ -436,10 +522,16 @@ def cmd_map(_: argparse.Namespace) -> int:
         die("MAP missing; run build/rebuild first")
     text = MAP.read_text(encoding="utf-8", errors="replace")
     print(f"MAP: {MAP} ({MAP.stat().st_size} bytes)")
-    for symbol in ("_bin_size_", "_code_size_", "_ram_use_end_", "_start_bss_", "_end_bss_"):
-        match = re.search(rf"\b{re.escape(symbol)}\b.*?(0x[0-9a-fA-F]+)", text)
-        if match:
-            print(f"{symbol:<16} {match.group(1)}")
+    for symbol in ("_bin_size_", "_code_size_", "_ram_use_end_", "_start_bss_", "_end_bss_", "__SRAM_SIZE"):
+        value = map_symbol_value(text, symbol)
+        if value is not None:
+            print(f"{symbol:<16} 0x{value:06X}")
+    ram_end = map_symbol_value(text, "_ram_use_end_")
+    if ram_end is not None:
+        print(f"TLSR8251 SRAM end  0x{SRAM_END:06X}")
+        print(f"RAM headroom       {SRAM_END - ram_end} bytes (includes main-stack region)")
+        print(f"linker guard       {MAIN_STACK_GUARD_BYTES} bytes minimum")
+    validate_map_sram()
     return 0
 
 
@@ -484,7 +576,7 @@ def parser() -> argparse.ArgumentParser:
     s.set_defaults(func=cmd_check_fw)
     s = sub.add_parser("size", help="print TC32 ELF size")
     s.set_defaults(func=cmd_size)
-    s = sub.add_parser("map", help="show key MAP symbols")
+    s = sub.add_parser("map", help="show key MAP symbols and TLSR8251 SRAM margin")
     s.set_defaults(func=cmd_map)
     s = sub.add_parser("manifest", help="write build integrity manifest")
     s.set_defaults(func=cmd_manifest)
