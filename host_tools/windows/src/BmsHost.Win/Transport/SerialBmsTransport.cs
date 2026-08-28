@@ -1,3 +1,4 @@
+using System.IO;
 using System.IO.Ports;
 using BmsHost.Core.Protocol;
 using BmsHost.Core.Transport;
@@ -39,22 +40,22 @@ public sealed class SerialBmsTransport : IBmsTransport
 
     public async Task<byte[]> RequestAsync(ReadOnlyMemory<byte> request, TimeSpan timeout, CancellationToken cancellationToken = default)
     {
-        if (!_port.IsOpen) throw new IOException("Serial port is not open.");
         await _requestGate.WaitAsync(cancellationToken);
         try
         {
             TaskCompletionSource<byte[]> tcs;
             lock (_sync)
             {
+                if (!_port.IsOpen) throw new IOException("Serial port is not open.");
                 _accumulator.Reset();
                 tcs = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
                 _responseTcs = tcs;
             }
 
-            var bytes = request.ToArray();
-            _port.Write(bytes, 0, bytes.Length);
             try
             {
+                var bytes = request.ToArray();
+                _port.Write(bytes, 0, bytes.Length);
                 return await tcs.Task.WaitAsync(timeout, cancellationToken);
             }
             catch (TimeoutException)
@@ -100,6 +101,12 @@ public sealed class SerialBmsTransport : IBmsTransport
 
     public Task DisconnectAsync()
     {
+        lock (_sync)
+        {
+            _accumulator.Reset();
+            _responseTcs?.TrySetException(new IOException("Serial port disconnected."));
+            _responseTcs = null;
+        }
         if (_port.IsOpen) _port.Close();
         return Task.CompletedTask;
     }

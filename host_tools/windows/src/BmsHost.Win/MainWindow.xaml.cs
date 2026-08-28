@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Globalization;
+using System.IO;
 using System.IO.Ports;
 using System.Text;
 using System.Windows;
@@ -65,8 +66,8 @@ public partial class MainWindow : Window
             var baudText = (BaudCombo.SelectedItem as System.Windows.Controls.ComboBoxItem)?.Content?.ToString() ?? "115200";
             var transport = new SerialBmsTransport(port, int.Parse(baudText, CultureInfo.InvariantCulture));
             transport.Disconnected += Transport_Disconnected;
-            await transport.ConnectAsync();
             AttachTransport(transport);
+            await transport.ConnectAsync();
             Log($"Connected: {transport.Name}");
             await TryInitialReadAsync();
         }
@@ -98,9 +99,8 @@ public partial class MainWindow : Window
                 throw new InvalidOperationException("Scan and select a BLE device first.");
             var transport = new BleBmsTransport();
             transport.Disconnected += Transport_Disconnected;
-            await transport.ConnectAsync(item.Address);
-            _bleTransport = transport;
             AttachTransport(transport);
+            await transport.ConnectAsync(item.Address);
             Log($"Connected: {transport.Name}; NUS ready; OTA={(transport.HasOta ? "available" : "not found")}");
             await TryInitialReadAsync();
         }
@@ -110,6 +110,7 @@ public partial class MainWindow : Window
     private void AttachTransport(IBmsTransport transport)
     {
         _transport = transport;
+        _bleTransport = transport as BleBmsTransport;
         _client = new BmsClient(transport);
         _client.Modbus.RetryCount = 3;
         _client.Modbus.RequestTimeout = TimeSpan.FromMilliseconds(900);
@@ -128,15 +129,20 @@ public partial class MainWindow : Window
     private async Task DisconnectCurrentAsync()
     {
         _otaCts?.Cancel();
-        var old = _transport;
-        _transport = null; _client = null; _bleTransport = null;
-        if (old is not null)
+        await _operationGate.WaitAsync();
+        try
         {
-            old.Disconnected -= Transport_Disconnected;
-            try { await old.DisposeAsync(); } catch { }
+            var old = _transport;
+            _transport = null; _client = null; _bleTransport = null;
+            if (old is not null)
+            {
+                old.Disconnected -= Transport_Disconnected;
+                try { await old.DisposeAsync(); } catch { }
+            }
+            ConnectionStatusText.Text = "Disconnected";
+            UpdateControls();
         }
-        ConnectionStatusText.Text = "Disconnected";
-        UpdateControls();
+        finally { _operationGate.Release(); }
     }
 
     private void Transport_Disconnected(object? sender, EventArgs e)
@@ -261,8 +267,9 @@ public partial class MainWindow : Window
         if (_otaInProgress) return;
         if (_bleTransport is null || !_bleTransport.IsConnected) { MessageBox.Show(this, "Connect through Bluetooth LE before OTA."); return; }
         if (!_bleTransport.HasOta) { MessageBox.Show(this, "The connected device does not expose the Telink OTA characteristic."); return; }
-        if (string.IsNullOrWhiteSpace(_otaFile) || !File.Exists(_otaFile)) { MessageBox.Show(this, "Choose a valid firmware .bin first."); return; }
-        if (MessageBox.Show(this, $"Start BLE OTA with:\n{_otaFile}\n\nDo not remove power during transfer.", "Confirm OTA", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+        var otaFile = _otaFile;
+        if (string.IsNullOrWhiteSpace(otaFile) || !File.Exists(otaFile)) { MessageBox.Show(this, "Choose a valid firmware .bin first."); return; }
+        if (MessageBox.Show(this, $"Start BLE OTA with:\n{otaFile}\n\nDo not remove power during transfer.", "Confirm OTA", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
 
         _otaInProgress = true; _otaCts = new CancellationTokenSource(); StartOtaButton.IsEnabled = false; CancelOtaButton.IsEnabled = true;
         OtaProgressBar.Value = 0; OtaStatusText.Text = "Starting OTA...";
@@ -271,8 +278,8 @@ public partial class MainWindow : Window
         {
             var ota = new TelinkBleOtaClient(_bleTransport);
             var progress = new Progress<OtaProgress>(p => { OtaProgressBar.Value = p.Percent; OtaProgressText.Text = $"{p.Percent:F1}%  packets {p.SentPackets}/{p.TotalPackets}  bytes {p.SentBytes:N0}/{p.FirmwareBytes:N0}"; });
-            Log($"OTA start: {_otaFile}");
-            var completion = await ota.UpgradeAsync(_otaFile, progress, _otaCts.Token);
+            Log($"OTA start: {otaFile}");
+            var completion = await ota.UpgradeAsync(otaFile, progress, _otaCts.Token);
             OtaStatusText.Text = completion.Message;
             if (completion.ResultConfirmed && completion.ResultCode == 0) OtaProgressBar.Value = 100;
             Log(completion.Message);

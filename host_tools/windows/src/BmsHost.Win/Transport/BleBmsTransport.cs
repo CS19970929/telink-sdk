@@ -1,3 +1,4 @@
+using System.IO;
 using BmsHost.Core.Ota;
 using BmsHost.Core.Protocol;
 using BmsHost.Core.Transport;
@@ -89,21 +90,26 @@ public sealed class BleBmsTransport : IBmsTransport
 
     public async Task<byte[]> RequestAsync(ReadOnlyMemory<byte> request, TimeSpan timeout, CancellationToken cancellationToken = default)
     {
-        if (!IsConnected || _nusWrite is null) throw new IOException("BLE BMS is not connected.");
         await _requestGate.WaitAsync(cancellationToken);
         try
         {
             TaskCompletionSource<byte[]> tcs;
+            GattCharacteristic nusWrite;
             lock (_sync)
             {
+                if (!IsConnected || _nusWrite is null) throw new IOException("BLE BMS is not connected.");
                 _accumulator.Reset();
                 tcs = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
                 _responseTcs = tcs;
+                nusWrite = _nusWrite;
             }
 
-            var status = await WriteCharacteristicAsync(_nusWrite, request, GattWriteOption.WriteWithResponse);
-            if (status != GattCommunicationStatus.Success) throw new IOException($"BLE NUS write failed: {status}.");
-            try { return await tcs.Task.WaitAsync(timeout, cancellationToken); }
+            try
+            {
+                var status = await WriteCharacteristicAsync(nusWrite, request, GattWriteOption.WriteWithResponse);
+                if (status != GattCommunicationStatus.Success) throw new IOException($"BLE NUS write failed: {status}.");
+                return await tcs.Task.WaitAsync(timeout, cancellationToken);
+            }
             catch (TimeoutException) { throw new TimeoutException($"No BLE Modbus notification within {timeout.TotalMilliseconds:0} ms."); }
             finally
             {
@@ -172,7 +178,12 @@ public sealed class BleBmsTransport : IBmsTransport
     private void OnConnectionStatusChanged(BluetoothLEDevice sender, object args)
     {
         if (sender.ConnectionStatus != BluetoothConnectionStatus.Disconnected) return;
-        lock (_sync) _responseTcs?.TrySetException(new IOException("BLE disconnected."));
+        lock (_sync)
+        {
+            var error = new IOException("BLE disconnected.");
+            _responseTcs?.TrySetException(error);
+            _otaResultTcs?.TrySetException(error);
+        }
         Disconnected?.Invoke(this, EventArgs.Empty);
     }
 
@@ -204,6 +215,15 @@ public sealed class BleBmsTransport : IBmsTransport
 
     public async Task DisconnectAsync()
     {
+        lock (_sync)
+        {
+            var error = new IOException("BLE disconnected.");
+            _accumulator.Reset();
+            _responseTcs?.TrySetException(error);
+            _responseTcs = null;
+            _otaResultTcs?.TrySetException(error);
+            _otaResultTcs = null;
+        }
         if (_nusNotify is not null)
         {
             _nusNotify.ValueChanged -= OnNusValueChanged;
