@@ -1,5 +1,5 @@
-# HS-D011 TLSR8251 authoritative source/link order.
-# Keep this file under review: object order affects the final Telink image.
+# TLSR8251 authoritative source/link order.
+# Board/AFE selection is compile-time; object order remains deterministic.
 # Update explicitly with: python bms_tools/bms.py sources --update
 vendor/common/app_buffer.c
 vendor/common/app_common.c
@@ -28,6 +28,7 @@ vendor/ble_sample/btname_modbus.c
 vendor/ble_sample/main.c
 vendor/ble_sample/modbus_rtu.c
 vendor/ble_sample/modbus_uart.c
+vendor/ble_sample/sh367309.c
 vendor/ble_sample/sh3673510.c
 drivers/B85/adc.c
 drivers/B85/aes.c

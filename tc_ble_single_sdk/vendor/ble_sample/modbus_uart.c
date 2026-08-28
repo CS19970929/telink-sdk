@@ -1,8 +1,10 @@
 #include "modbus_uart.h"
 #include "modbus_rtu.h"
-#include "hs_d011_board.h"
+#include "bms_board.h"
 #include "drivers.h"
 #include <string.h>
+
+#if BMS_RS485_ENABLE
 
 static volatile u8 s_rx_ready;
 static volatile u8 s_tx_dma_done;
@@ -39,8 +41,7 @@ void modbus_uart_init(void)
 
     uart_gpio_set(BMS_RS485_TX_PIN, BMS_RS485_RX_PIN);
     uart_reset();
-    /* Preserve the established BMS link: 115200, 8N1 at 16 MHz. */
-    uart_init(9, 13, PARITY_NONE, STOP_BIT_ONE);
+    uart_init(9, 13, PARITY_NONE, STOP_BIT_ONE); /* 115200 8N1 @16 MHz */
     uart_dma_enable(1, 1);
     uart_irq_enable(0, 0);
     rx_rearm();
@@ -56,11 +57,10 @@ void modbus_uart_irq_proc(void)
     u8 irqsrc = dma_chn_irq_status_get();
     if (irqsrc & FLD_DMA_CHN_UART_RX) {
         dma_chn_irq_status_clr(FLD_DMA_CHN_UART_RX);
-        if (s_rx_pkt.dma_len > 0u && s_rx_pkt.dma_len <= sizeof(s_rx_pkt.data)) {
+        if (s_rx_pkt.dma_len > 0u && s_rx_pkt.dma_len <= sizeof(s_rx_pkt.data))
             s_rx_ready = 1u;
-        } else {
+        else
             rx_rearm();
-        }
     }
     if (irqsrc & FLD_DMA_CHN_UART_TX) {
         dma_chn_irq_status_clr(FLD_DMA_CHN_UART_TX);
@@ -97,16 +97,13 @@ void modbus_uart_process(void)
         s_rx_ready = 0u;
 
         if (req_len > 0u && req_len <= sizeof(s_rx_pkt.data) &&
-            modbus_on_frame(s_rx_pkt.data, req_len, s_rsp, &rsp_len) && rsp_len) {
-            /* RX is re-armed after the half-duplex response has fully shifted out. */
+            modbus_on_frame(s_rx_pkt.data, req_len, s_rsp, &rsp_len) && rsp_len)
             modbus_uart_send(s_rsp, rsp_len);
-        } else {
+        else
             rx_rearm();
-        }
         s_last_rearm_tick = clock_time();
     }
 
-    /* Recover from malformed/partial traffic without resetting UART configuration. */
     if (!s_rx_ready && !uart_tx_is_busy() && clock_time_exceed(s_last_rearm_tick, 1000000u)) {
         if (uart_is_parity_error()) uart_clear_parity_error();
         rs485_rx_mode();
@@ -114,3 +111,16 @@ void modbus_uart_process(void)
         s_last_rearm_tick = clock_time();
     }
 }
+
+#else
+
+/* Transport stub: keeps the deterministic source list unchanged while a board
+ * profile has no compatible physical RS485 transceiver. BLE Modbus uses the
+ * same modbus_on_frame() parser and is unaffected.
+ */
+void modbus_uart_init(void) { }
+void modbus_uart_irq_proc(void) { }
+void modbus_uart_process(void) { }
+void modbus_uart_send(const u8 *data, u32 len) { (void)data; (void)len; }
+
+#endif /* BMS_RS485_ENABLE */

@@ -7,6 +7,7 @@
 #define BMS_AFE_TEMP_CHANNELS      4u
 
 #define BMS_AFE_TYPE_UNKNOWN       0x0000u
+#define BMS_AFE_TYPE_SH367309      0x0309u
 #define BMS_AFE_TYPE_SH3673510     0x3510u
 #define BMS_AFE_TYPE_SIMULATED     0xFFFFu
 
@@ -33,10 +34,12 @@
 #define BMS_AFE_FAULT_DSG_UT       BIT(9)
 #define BMS_AFE_FAULT_WDT          BIT(10)
 #define BMS_AFE_FAULT_RESET        BIT(11)
+#define BMS_AFE_FAULT_PF           BIT(12)
 #define BMS_AFE_FAULT_ALL          0xFFFFFFFFu
 
 #define BMS_AFE_APPLY_OK            0
 #define BMS_AFE_APPLY_NOT_MAPPED    1
+#define BMS_AFE_ERR_UNSUPPORTED    (-6)
 
 typedef struct {
     u16 afe_type;
@@ -65,8 +68,8 @@ typedef struct {
     u16 vchgr_mv;
     u32 fault_bits;
 
-    /* Raw AFE status is intentionally retained for engineering diagnostics.
-     * Application logic must not decode these fields outside the AFE adapter.
+    /* Raw AFE status is retained for engineering diagnostics only. Application
+     * logic must not decode chip-specific fields outside the AFE adapter.
      */
     u8 flag1;
     u8 flag2;
@@ -82,12 +85,7 @@ int bms_afe_sample(bms_afe_sample_t *sample);
 int bms_afe_set_mos(u8 charge_on, u8 discharge_on);
 int bms_afe_clear_faults(u32 fault_mask);
 
-/* Return 1 when this logical parameter has a direct AFE hardware projection.
- * min/max/step are expressed in the logical parameter's standard unit.
- */
 int bms_afe_get_param_limits(u16 param_id, s32 *min_value, s32 *max_value, s32 *step);
-
-/* value is already range-checked and safely quantized by bms_param. */
 int bms_afe_apply_param(u16 param_id, s32 value);
 
 #endif /* BMS_AFE_H_ */

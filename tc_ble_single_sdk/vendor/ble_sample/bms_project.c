@@ -1,5 +1,5 @@
 #include "bms_project.h"
-#include "hs_d011_board.h"
+#include "bms_board.h"
 #include "modbus_uart.h"
 #include "btname_modbus.h"
 #include "bms_ble_compat.h"
@@ -19,18 +19,9 @@ static u32 bms_ticks_to_us(u32 ticks)
     return (BMS_SYS_TICKS_PER_US != 0u) ? (ticks / BMS_SYS_TICKS_PER_US) : 0u;
 }
 
-/*
- * Keep Telink's BLE suspend enabled, but make BMS timing authoritative.
- *
- * The BLE controller may otherwise sleep according to advertising/connection
- * timing and slave latency. bls_pm_setAppWakeupLowPower() adds an application
- * deadline; the controller can still wake earlier for BLE, but may not sleep
- * beyond the next BMS sample/protection deadline.
- *
- * This is intentionally based on the existing AFE polling deadline. Future SOC
- * and storage tasks should contribute their own deadlines and the earliest one
- * should win. SOC must use measured elapsed time, not assume that every callback
- * ran at an exact nominal period.
+/* Keep Telink BLE suspend enabled while making the BMS sample deadline
+ * authoritative. The controller may wake earlier for BLE but not later than
+ * the next application deadline.
  */
 static void bms_scheduler_arm_next_wakeup(void)
 {
@@ -51,8 +42,7 @@ static void bms_scheduler_arm_next_wakeup(void)
         remain = min_lead_ticks;
     } else {
         remain = period_ticks - elapsed;
-        if (remain < min_lead_ticks)
-            remain = min_lead_ticks;
+        if (remain < min_lead_ticks) remain = min_lead_ticks;
     }
 
     g_bms.pm_app_wakeup_tick = now + remain;
@@ -64,12 +54,13 @@ static void bms_scheduler_arm_next_wakeup(void)
 
 static void board_gpio_init(void)
 {
-#if !BMS_AFE_SIMULATION_ENABLE
+#if (BMS_BOARD_PROFILE == BMS_BOARD_PROFILE_HS_D011) && !BMS_AFE_SIMULATION_ENABLE
     const GPIO_PinTypeDef outputs[] = {
         BMS_HEAT_CHG_PIN, BMS_HEAT_RF_EN_PIN, BMS_LED_PIN, BMS_CMNT_EN_PIN
     };
     u8 i;
-    for (i = 0; i < sizeof(outputs) / sizeof(outputs[0]); ++i) {
+
+    for (i = 0u; i < sizeof(outputs) / sizeof(outputs[0]); ++i) {
         gpio_set_func(outputs[i], AS_GPIO);
         gpio_set_input_en(outputs[i], 0);
         gpio_set_output_en(outputs[i], 1);
@@ -88,8 +79,9 @@ static void board_gpio_init(void)
     gpio_set_input_en(BMS_CMNT_WAKE_PIN, 1);
     gpio_set_output_en(BMS_CMNT_WAKE_PIN, 0);
 #else
-    /* A pre-hardware simulation image may be flashed to an older TLSR8251 BMS
-     * board with a different AFE/pin map. Do not drive any HS-D011-specific IO.
+    /* The legacy 309 validation profile intentionally leaves unrelated GPIO at
+     * SDK/reset defaults. sh367309_init() claims only I2C C0/C1. This prevents
+     * HS-D011 outputs from being driven on a different PCB.
      */
 #endif
 }
@@ -99,9 +91,9 @@ static int afe_start(void)
     int rc = bms_afe_init();
     if (rc != 0) return rc;
 
-    /* AFE registers are a runtime projection of the common parameter DB.
-     * In simulation the adapter exposes no direct hardware mappings, so this
-     * remains a no-op and does not touch an AFE bus.
+    /* Only mappings advertised by the selected AFE adapter are projected.
+     * SH367309 real-data validation currently advertises no writable MTP
+     * parameter mappings, so existing AFE protection configuration is retained.
      */
     rc = bms_param_apply_hardware_all();
     if (rc != 0) return -20 + rc;
@@ -116,11 +108,10 @@ void bms_project_init(void)
     memset(&g_bms, 0, sizeof(g_bms));
     g_bms.soh = 100u;
 #if BMS_AFE_SIMULATION_ENABLE
-    /* Useful, non-protecting defaults for BLE/Modbus application testing. */
     g_bms.soc = 75u;
-    g_bms.capacity_factory_x100 = 5000u; /* 50.00 Ah */
-    g_bms.capacity_full_x100 = 4900u;    /* 49.00 Ah */
-    g_bms.capacity_now_x100 = 3675u;     /* 36.75 Ah */
+    g_bms.capacity_factory_x100 = 5000u;
+    g_bms.capacity_full_x100 = 4900u;
+    g_bms.capacity_now_x100 = 3675u;
     g_bms.cycle_count = 12u;
 #endif
 
@@ -128,38 +119,24 @@ void bms_project_init(void)
     btname_init();
     btname_set_refresh_callback(bms_ble_refresh_name);
 
-    /* user_init_normal() has already initialized the controller address. Calling
-     * the same SDK address initializer again only retrieves the persisted/public
-     * values into our protocol mirror; no private/non-SDK getter is required.
-     */
     blc_initMacAddress(flash_sector_mac_address, g_bms.mac_public, mac_random_static);
-
     bms_ble_compat_apply();
 
-    /* Load common logical parameters (defaults or CRC-validated A/B flash record)
-     * before the AFE is initialized, then project only parameters supported by
-     * the selected AFE adapter.
-     */
     bms_param_init();
     rc = afe_start();
     g_bms.afe_last_error = (s16)rc;
     g_bms.afe_init_ok = (rc == 0) ? 1u : 0u;
     s_afe_fail_count = 0u;
 
-    /* Software protection starts with user MOS requests enabled but does not
-     * issue an ON request until the first complete AFE/sample frame is evaluated.
-     */
     bms_protect_init();
 
-#if !BMS_AFE_SIMULATION_ENABLE
+#if BMS_RS485_ENABLE
     modbus_uart_init();
 #endif
 
     s_afe_poll_tick = clock_time();
     g_bms.afe_sample_dt_us = 0u;
     g_bms.scheduler_overrun_count = 0u;
-
-    /* Arm before entering the application's first BLE PM cycle. */
     bms_scheduler_arm_next_wakeup();
 }
 
@@ -167,7 +144,7 @@ void bms_project_process(void)
 {
     int rc;
 
-#if !BMS_AFE_SIMULATION_ENABLE
+#if BMS_RS485_ENABLE
     modbus_uart_process();
 #endif
     bms_param_process();
@@ -179,10 +156,8 @@ void bms_project_process(void)
 
         s_afe_poll_tick = now;
         g_bms.afe_sample_dt_us = elapsed_us;
-
-        if (elapsed_us > (BMS_AFE_POLL_PERIOD_US + BMS_SCHEDULER_OVERRUN_TOLERANCE_US)) {
+        if (elapsed_us > (BMS_AFE_POLL_PERIOD_US + BMS_SCHEDULER_OVERRUN_TOLERANCE_US))
             ++g_bms.scheduler_overrun_count;
-        }
 
         rc = bms_afe_sample(&g_bms.afe);
         if (rc != 0) {
@@ -195,8 +170,7 @@ void bms_project_process(void)
                 g_bms.afe_init_ok = (rc == 0) ? 1u : 0u;
                 g_bms.afe_last_error = (s16)rc;
                 s_afe_fail_count = 0u;
-                if (rc == 0)
-                    bms_protect_force_mos_reapply();
+                if (rc == 0) bms_protect_force_mos_reapply();
             }
         } else {
             g_bms.afe_init_ok = 1u;
@@ -206,16 +180,12 @@ void bms_project_process(void)
         }
     }
 
-    /* main() calls main_loop() (and therefore blt_pm_proc()) before the next
-     * bms_project_process() pass. Arm the next application deadline here so it
-     * is already active when Telink PM decides how long to suspend.
-     */
     bms_scheduler_arm_next_wakeup();
 }
 
 void bms_project_irq_handler(void)
 {
-#if !BMS_AFE_SIMULATION_ENABLE
+#if BMS_RS485_ENABLE
     modbus_uart_irq_proc();
 #endif
 }
@@ -236,7 +206,7 @@ static u16 legacy_temp(u8 index)
 
 static u16 legacy_fault_word(void)
 {
-    u16 f = 0;
+    u16 f = 0u;
     u32 af = g_bms.afe.fault_bits;
 
     if (af & BMS_AFE_FAULT_CELL_OV) f |= BIT(0);
@@ -263,12 +233,12 @@ u16 bms_project_read_legacy_d000(u16 offset)
     case 32: return g_bms.afe.cell_max_mv;
     case 33: return g_bms.afe.cell_min_mv;
     case 34: {
-        u8 i; for (i = 0; i < cells; ++i) if (g_bms.afe.cell_mv[i] == g_bms.afe.cell_max_mv) return (u16)(i + 1u);
-        return 0;
+        u8 i; for (i = 0u; i < cells; ++i) if (g_bms.afe.cell_mv[i] == g_bms.afe.cell_max_mv) return (u16)(i + 1u);
+        return 0u;
     }
     case 35: {
-        u8 i; for (i = 0; i < cells; ++i) if (g_bms.afe.cell_mv[i] == g_bms.afe.cell_min_mv) return (u16)(i + 1u);
-        return 0;
+        u8 i; for (i = 0u; i < cells; ++i) if (g_bms.afe.cell_mv[i] == g_bms.afe.cell_min_mv) return (u16)(i + 1u);
+        return 0u;
     }
     case 36: return g_bms.afe.cell_delta_mv;
     case 37: return (u16)(g_bms.afe.pack_mv / 10u);
@@ -326,15 +296,23 @@ void bms_project_set_soc(u16 soc)
     g_bms.soc = (soc > 100u) ? 100u : soc;
 }
 
+static int afe_has_mos_control(void)
+{
+    bms_afe_info_t info;
+    memset(&info, 0, sizeof(info));
+    bms_afe_get_info(&info);
+    return (info.feature_bits & BMS_AFE_FEAT_MOS_CONTROL) ? 1 : 0;
+}
+
 int bms_project_command(u16 value)
 {
     switch (value) {
     case 0x0010u:
         return bms_afe_clear_faults(BMS_AFE_FAULT_ALL) == 0;
     case 0x0011u:
-        return bms_protect_request_mos(1u, 1u);
+        return afe_has_mos_control() ? bms_protect_request_mos(1u, 1u) : 0;
     case 0x0012u:
-        return bms_protect_request_mos(0u, 0u);
+        return afe_has_mos_control() ? bms_protect_request_mos(0u, 0u) : 0;
     default:
         return 1;
     }
