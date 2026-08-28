@@ -6,16 +6,27 @@
 #include "btname_modbus.h"
 #include <string.h>
 
-#ifndef BMS_BUILD_SERIAL
-#define BMS_BUILD_SERIAL "UNKNOWN-00000000"
+#ifndef BMS_BUILD_DATE
+#define BMS_BUILD_DATE 0
+#endif
+#define BMS_STRINGIFY_INNER(x) #x
+#define BMS_STRINGIFY(x) BMS_STRINGIFY_INNER(x)
+
+#if (BMS_AFE_MODEL == BMS_AFE_MODEL_SH367309)
+#define BMS_AFE_SERIAL_TEXT "SH367309"
+#elif (BMS_AFE_MODEL == BMS_AFE_MODEL_SH3673510)
+#define BMS_AFE_SERIAL_TEXT "SH3673510"
+#elif (BMS_AFE_MODEL == BMS_AFE_MODEL_SIMULATED)
+#define BMS_AFE_SERIAL_TEXT "MOCK"
+#else
+#define BMS_AFE_SERIAL_TEXT "UNKNOWN"
 #endif
 
-/* BMS_BUILD_SERIAL is injected by bms_tools/build.mk from the selected AFE and
- * local build date, e.g. SH367309-20260828 / SH3673510-20260828 / MOCK-20260828.
- * This makes the production-identification registers self-describe the image
- * that was actually selected on the command line.
+/* The serial is selected entirely at compile time from the actual AFE define
+ * plus the numeric local build date injected by build.mk.
+ * Examples: SH367309-20260828 / SH3673510-20260828 / MOCK-20260828.
  */
-static const u8 k_serial[] = BMS_BUILD_SERIAL;
+static const u8 k_serial[] = BMS_AFE_SERIAL_TEXT "-" BMS_STRINGIFY(BMS_BUILD_DATE);
 #if (BMS_BOARD_PROFILE == BMS_BOARD_PROFILE_LEGACY_309)
 static const u8 k_hwver[]  = "LEGACY-309";
 #elif (BMS_BOARD_PROFILE == BMS_BOARD_PROFILE_HS_D011)
