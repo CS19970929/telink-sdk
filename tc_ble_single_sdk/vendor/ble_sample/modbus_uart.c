@@ -111,7 +111,7 @@ static void rx_rearm(void)
 static void serial_hw_start(void)
 {
 #if BMS_SERIAL_PM_ENABLE
-    /* Disable both wake mechanisms before returning PC3 to the UART mux. */
+    /* Remove every test wake mechanism before returning PC3 to the UART mux. */
     cpu_set_gpio_wakeup(BMS_SERIAL_RX_GPIO, BMS_SERIAL_WAKE_LEVEL, 0);
     gpio_en_interrupt_risc0(BMS_SERIAL_RX_GPIO, 0);
     gpio_clr_irq_status(GPIO_IRQ_GPIO2RISC0_STATUS);
@@ -125,7 +125,7 @@ static void serial_hw_start(void)
 
     /* Keep the active UART sequence aligned with the known-good legacy project:
      * prepare RX DMA first, mux pins, reset/init UART, then enable DMA + IRQ.
-     * Low-power code never touches this sequence while SERIAL_PM_ACTIVE.
+     * Low-power test variants never touch this sequence while ACTIVE.
      */
     rx_rearm();
     uart_gpio_set(BMS_SERIAL_TX_PIN, BMS_SERIAL_RX_PIN);
@@ -158,24 +158,39 @@ static void serial_pm_enter_sleep(void)
     uart_irq_enable(0, 0);
     serial_rx_mode();
 
-    /* Keep TX at the standard UART idle level while the peripheral is asleep. */
     gpio_set_func(BMS_SERIAL_TX_GPIO, AS_GPIO);
     gpio_set_input_en(BMS_SERIAL_TX_GPIO, 0);
+#if BMS_SERIAL_PM_TX_SLEEP_HIZ
+    /* Power-test variants release TX exactly like the legacy bus-listen state. */
+    gpio_set_output_en(BMS_SERIAL_TX_GPIO, 0);
+    gpio_setup_up_down_resistor(BMS_SERIAL_TX_GPIO, PM_PIN_UP_DOWN_FLOAT);
+#else
+    /* CURRENT reproduces the already tested firmware exactly: TX idle HIGH. */
     gpio_set_output_en(BMS_SERIAL_TX_GPIO, 1);
     gpio_write(BMS_SERIAL_TX_GPIO, 1);
+#endif
 
-    /* RX idle is HIGH. A weak pull-up prevents a disconnected/floating cable
-     * from repeatedly waking the MCU. Falling edges are detected by RISC0 while
-     * awake and the same LOW level is also armed as a suspend/deep-sleep pad.
+    /* RX idle is HIGH. Keep the same weak pull-up in every variant so the A/B
+     * test changes only TX drive and/or wake circuitry, not RX DC bias.
      */
     gpio_set_func(BMS_SERIAL_RX_GPIO, AS_GPIO);
     gpio_set_output_en(BMS_SERIAL_RX_GPIO, 0);
     gpio_set_input_en(BMS_SERIAL_RX_GPIO, 1);
     gpio_setup_up_down_resistor(BMS_SERIAL_RX_GPIO, BMS_SERIAL_RX_SLEEP_PULL);
 
+#if BMS_SERIAL_PM_USE_RISC0_WAKE
     gpio_set_interrupt_risc0(BMS_SERIAL_RX_GPIO, POL_FALLING);
     gpio_en_interrupt_risc0(BMS_SERIAL_RX_GPIO, 1);
+#else
+    gpio_en_interrupt_risc0(BMS_SERIAL_RX_GPIO, 0);
+    gpio_clr_irq_status(GPIO_IRQ_GPIO2RISC0_STATUS);
+#endif
+
+#if BMS_SERIAL_PM_USE_PAD_WAKE
     cpu_set_gpio_wakeup(BMS_SERIAL_RX_GPIO, BMS_SERIAL_WAKE_LEVEL, 1);
+#else
+    cpu_set_gpio_wakeup(BMS_SERIAL_RX_GPIO, BMS_SERIAL_WAKE_LEVEL, 0);
+#endif
 
     s_pm_state = SERIAL_PM_WAKE_ARMED;
     s_pm_wake_pending = 0u;
@@ -187,7 +202,9 @@ static void serial_pm_enter_sleep(void)
      * immediately so the next LinkLayer iteration can actually suspend.
      */
     serial_pm_set_suspend_allowed(1u);
+#if BMS_SERIAL_PM_USE_PAD_WAKE
     bls_pm_setWakeupSource(PM_WAKEUP_PAD);
+#endif
 }
 
 static void serial_pm_request_wake(void)
@@ -219,18 +236,20 @@ static void serial_pm_suspend_enter_cb(u8 e, u8 *p, int n)
 {
 #if BLE_APP_PM_ENABLE
     task_sleep_enter(e, p, n);
+#if BMS_SERIAL_PM_USE_PAD_WAKE
     if (s_pm_state == SERIAL_PM_WAKE_ARMED)
         bls_pm_setWakeupSource(PM_WAKEUP_PAD);
+#endif
 #else
     (void)e; (void)p; (void)n;
 #endif
 }
 
+#if BMS_SERIAL_PM_USE_PAD_WAKE
 static void serial_pm_gpio_early_wakeup_cb(u8 e, u8 *p, int n)
 {
-    /* PAD wake is the authoritative wake path from Suspend. RISC0 below is kept
-     * as the same falling-edge detector used by the proven legacy bus mux, so
-     * serial wake also works when the CPU happens to be awake for a BMS task.
+    /* PAD wake is the authoritative wake path from Suspend. RISC0, when enabled
+     * by the selected variant, additionally detects a falling edge while awake.
      */
     serial_pm_request_wake();
 
@@ -242,6 +261,7 @@ static void serial_pm_gpio_early_wakeup_cb(u8 e, u8 *p, int n)
     (void)e; (void)p; (void)n;
 #endif
 }
+#endif
 #endif /* BMS_SERIAL_PM_ENABLE */
 
 void modbus_uart_init(void)
@@ -266,19 +286,20 @@ void modbus_uart_init(void)
 
 #if BMS_SERIAL_PM_ENABLE && BLE_APP_PM_ENABLE
     /* bms_project_init() runs after user_init_normal(), so app.c has already
-     * registered its callbacks. These wrappers become the final callbacks while
-     * preserving task_sleep_enter and optional keyboard/button behavior.
+     * registered its callbacks. Preserve the original suspend-enter behavior.
      */
     bls_app_registerEventCallback(BLT_EV_FLAG_SUSPEND_ENTER,
                                   &serial_pm_suspend_enter_cb);
+#if BMS_SERIAL_PM_USE_PAD_WAKE
     bls_app_registerEventCallback(BLT_EV_FLAG_GPIO_EARLY_WAKEUP,
                                   &serial_pm_gpio_early_wakeup_cb);
+#endif
 #endif
 }
 
 void modbus_uart_irq_proc(void)
 {
-#if BMS_SERIAL_PM_ENABLE
+#if BMS_SERIAL_PM_ENABLE && BMS_SERIAL_PM_USE_RISC0_WAKE
     if (s_pm_state == SERIAL_PM_WAKE_ARMED) {
         if (reg_irq_src & FLD_IRQ_GPIO_RISC0_EN) {
             reg_irq_src = FLD_IRQ_GPIO_RISC0_EN;
@@ -286,6 +307,9 @@ void modbus_uart_irq_proc(void)
         }
         return;
     }
+#elif BMS_SERIAL_PM_ENABLE
+    if (s_pm_state == SERIAL_PM_WAKE_ARMED)
+        return;
 #endif
 
     {
@@ -339,8 +363,7 @@ void modbus_uart_process(void)
 {
 #if BMS_SERIAL_PM_ENABLE
     /* GPIO/PAD wake only posts a request in IRQ/callback context. Re-enter the
-     * exact stable UART path here, after app/main processing and before the next
-     * BLE LinkLayer iteration. The wake frame itself is intentionally disposable.
+     * exact stable UART path here. The wake frame itself is disposable.
      */
     if (s_pm_wake_pending)
         serial_pm_restore_from_wake();
@@ -351,7 +374,7 @@ void modbus_uart_process(void)
 
     /* blt_pm_proc() runs earlier in the same main-loop iteration and restores
      * normal BLE suspend policy. While UART is active, serial owns the final
-     * veto so UART/DMA remain identical to the already bench-proven baseline.
+     * veto so UART/DMA remain identical to the bench-proven baseline.
      */
     serial_keep_awake();
 
