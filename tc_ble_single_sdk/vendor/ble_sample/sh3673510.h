@@ -2,7 +2,7 @@
 #define SH3673510_H_
 
 #include "tl_common.h"
-#include "hs_d011_board.h"
+#include "bms_board.h"
 
 enum {
     SH3673510_REG_SCONF1   = 0x40,
