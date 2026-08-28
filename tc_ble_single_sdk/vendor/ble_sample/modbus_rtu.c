@@ -1,4 +1,5 @@
 #include "modbus_rtu.h"
+#include "modbus_uart.h"
 #include "bms_project.h"
 #include "bms_param.h"
 #include "bms_protect.h"
@@ -116,6 +117,30 @@ static u16 read_protect_status(u16 off)
     }
 }
 
+static u16 read_serial_pm_status(u16 off)
+{
+    modbus_uart_pm_diag_t d;
+    u16 flags;
+
+    modbus_uart_get_pm_diag(&d);
+    flags = (u16)((d.active ? BIT(0) : 0u) |
+                  (d.wake_armed ? BIT(1) : 0u) |
+                  (d.wake_pending ? BIT(2) : 0u) |
+                  (BMS_SERIAL_PM_ENABLE ? BIT(3) : 0u));
+
+    switch (off) {
+    case 0: return BMS_SERIAL_PM_MAGIC;
+    case 1: return BMS_SERIAL_PM_VERSION;
+    case 2: return flags;
+    case 3: return (u16)BMS_SERIAL_IDLE_SLEEP_MS;
+    case 4: return (u16)d.sleep_count;
+    case 5: return (u16)(d.sleep_count >> 16);
+    case 6: return (u16)d.wake_count;
+    case 7: return (u16)(d.wake_count >> 16);
+    default: return 0u;
+    }
+}
+
 static u16 read_reg(u16 reg)
 {
     const bms_project_state_t *s = bms_project_get_state();
@@ -162,6 +187,8 @@ static u16 read_reg(u16 reg)
         return read_realtime((u16)(reg - BMS_REALTIME_REG_BASE));
     if (reg >= BMS_PROTECT_STATUS_REG_BASE && reg < BMS_PROTECT_STATUS_REG_BASE + BMS_PROTECT_STATUS_REG_COUNT)
         return read_protect_status((u16)(reg - BMS_PROTECT_STATUS_REG_BASE));
+    if (reg >= BMS_SERIAL_PM_REG_BASE && reg < BMS_SERIAL_PM_REG_BASE + BMS_SERIAL_PM_REG_COUNT)
+        return read_serial_pm_status((u16)(reg - BMS_SERIAL_PM_REG_BASE));
 
     return 0u;
 }
@@ -175,7 +202,8 @@ static int write_one(u16 reg, u16 val)
         (reg >= BMS_PARAM_CAP_BASE && reg < BMS_PARAM_CAP_BASE + BMS_PARAM_CAP_REG_COUNT) ||
         (reg >= BMS_PARAM_VALUE_BASE && reg < BMS_PARAM_VALUE_BASE + BMS_PARAM_VALUE_REG_COUNT) ||
         (reg >= BMS_PARAM_EFFECTIVE_BASE && reg < BMS_PARAM_EFFECTIVE_BASE + BMS_PARAM_VALUE_REG_COUNT) ||
-        (reg >= BMS_PROTECT_STATUS_REG_BASE && reg < BMS_PROTECT_STATUS_REG_BASE + BMS_PROTECT_STATUS_REG_COUNT))
+        (reg >= BMS_PROTECT_STATUS_REG_BASE && reg < BMS_PROTECT_STATUS_REG_BASE + BMS_PROTECT_STATUS_REG_COUNT) ||
+        (reg >= BMS_SERIAL_PM_REG_BASE && reg < BMS_SERIAL_PM_REG_BASE + BMS_SERIAL_PM_REG_COUNT))
         return 0; /* metadata/capabilities/status are RO; signed32 values reject FC06 half-writes */
 
     if (reg >= BMS_PARAM_LEGACY_BASE && reg < BMS_PARAM_LEGACY_BASE + BMS_PARAM_COUNT)
