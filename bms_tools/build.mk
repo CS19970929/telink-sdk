@@ -20,6 +20,23 @@ GEN_DIR := $(BUILD_DIR)/gen
 BMS_BOARD_PROFILE ?= 2
 BMS_AFE_MODEL ?= 1
 
+# Production identity follows the selected AFE and the local build date.
+# Examples: SH367309-20260828, SH3673510-20260828, MOCK-20260828.
+# Use rebuild for release/test images so a new build day cannot reuse an older
+# object that still contains yesterday's identity string.
+PYTHON ?= python
+BMS_BUILD_DATE ?= $(shell $(PYTHON) -c "from datetime import date; print(date.today().strftime('%Y%m%d'))")
+ifeq ($(BMS_AFE_MODEL),0)
+BMS_AFE_SERIAL_NAME := MOCK
+else ifeq ($(BMS_AFE_MODEL),1)
+BMS_AFE_SERIAL_NAME := SH367309
+else ifeq ($(BMS_AFE_MODEL),2)
+BMS_AFE_SERIAL_NAME := SH3673510
+else
+BMS_AFE_SERIAL_NAME := UNKNOWN
+endif
+BMS_BUILD_SERIAL ?= $(BMS_AFE_SERIAL_NAME)-$(BMS_BUILD_DATE)
+
 CC := tc32-elf-gcc
 LD := tc32-elf-ld
 OBJCOPY := tc32-elf-objcopy
@@ -45,7 +62,8 @@ DEFINES := \
 	-D__PROJECT_8258_BLE_SAMPLE__=1 \
 	-DCHIP_TYPE=CHIP_TYPE_825x \
 	-DBMS_BOARD_PROFILE=$(BMS_BOARD_PROFILE) \
-	-DBMS_AFE_MODEL=$(BMS_AFE_MODEL)
+	-DBMS_AFE_MODEL=$(BMS_AFE_MODEL) \
+	-DBMS_BUILD_SERIAL=\"$(BMS_BUILD_SERIAL)\"
 
 # Exact compiler-side options used by the existing 825x_ble_sample config.
 CFLAGS_BASE := \
@@ -70,9 +88,12 @@ LIBS := -llt_825x -llt_general_stack
 
 -include $(BUILD_DIR)/sources.mk
 
-.PHONY: all size
+.PHONY: all size identity
 
-all: $(ELF) $(RAW_BIN) $(LST) size
+all: identity $(ELF) $(RAW_BIN) $(LST) size
+
+identity:
+	@echo Build serial: $(BMS_BUILD_SERIAL)
 
 $(ELF): $(OBJS)
 	@echo Linking: $@
