@@ -63,37 +63,42 @@
 #define BMS_PROTECT_OPPOSITE_REOPEN_ENABLE 1u
 #endif
 
-/* Serial-only policy.
+/* Serial power policy.
  *
- * The known-good legacy project multiplexes one-wire and UART. Once it enters
- * UART mode, UART/DMA stay configured until the mux explicitly leaves that
- * state. This project does not need one-wire, so it permanently uses the same
- * UART-active behavior: RX is never remuxed to GPIO and no request is consumed
- * merely as a wake frame.
- *
- * BLE Suspend gates clocks/resources needed by asynchronous UART DMA, therefore
- * serial-only mode keeps Suspend disabled. This intentionally favors reliable
- * communication over low current. A future low-power UART design should be a
- * separate, explicitly validated feature rather than part of the base driver.
+ * ACTIVE deliberately preserves the exact UART/DMA flow that has been bench
+ * verified against the legacy SH367309 project and vetoes BLE Suspend.
+ * After 3 seconds without RX/TX activity, plus a short boundary guard, the
+ * transport leaves UART once, remuxes RX to GPIO, and permits normal BLE/BMS
+ * Suspend again. RX falling/LOW is armed through both GPIO RISC0 and PAD wake.
+ * The first request after sleep is allowed to be lost; UART/DMA are restored in
+ * normal main-loop context and subsequent Modbus requests communicate normally.
  */
 #ifndef BMS_SERIAL_KEEP_AWAKE
 #define BMS_SERIAL_KEEP_AWAKE           1u
 #endif
-
-/* Deprecated compatibility switch. The UART/GPIO wake state machine has been
- * removed from the serial driver; keep this defined as 0 so old conditionals do
- * not accidentally re-enable that behavior.
- */
 #ifndef BMS_SERIAL_PM_ENABLE
-#define BMS_SERIAL_PM_ENABLE            0u
+#define BMS_SERIAL_PM_ENABLE            1u
+#endif
+#ifndef BMS_SERIAL_IDLE_SLEEP_MS
+#define BMS_SERIAL_IDLE_SLEEP_MS        3000u
+#endif
+#ifndef BMS_SERIAL_SLEEP_GUARD_MS
+#define BMS_SERIAL_SLEEP_GUARD_MS       50u
+#endif
+#ifndef BMS_SERIAL_WAKE_LEVEL
+#define BMS_SERIAL_WAKE_LEVEL           Level_Low
+#endif
+#ifndef BMS_SERIAL_RX_SLEEP_PULL
+#define BMS_SERIAL_RX_SLEEP_PULL        PM_PIN_PULLUP_1M
 #endif
 
-/* Legacy Modbus diagnostics still expose the former idle-sleep timeout register.
- * Serial-only mode has no idle-to-GPIO transition, so the meaningful value is 0.
- * Keep the symbol for protocol/build compatibility without restoring PM behavior.
- */
-#ifndef BMS_SERIAL_IDLE_SLEEP_MS
-#define BMS_SERIAL_IDLE_SLEEP_MS        0u
+#if BMS_SERIAL_ENABLE && BMS_SERIAL_PM_ENABLE
+#ifndef BMS_SERIAL_TX_GPIO
+#error "BMS_SERIAL_TX_GPIO is required when serial PM is enabled"
+#endif
+#ifndef BMS_SERIAL_RX_GPIO
+#error "BMS_SERIAL_RX_GPIO is required when serial PM is enabled"
+#endif
 #endif
 
 /* The production SOC estimator is not integrated yet. A zero/uninitialized SOC
