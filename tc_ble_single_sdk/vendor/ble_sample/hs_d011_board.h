@@ -7,6 +7,20 @@
 #define BMS_BOARD_NAME                  "HS-D011-10S50A-V1"
 #define BMS_CELL_COUNT                  10u
 
+/*
+ * Pre-hardware simulation mode.
+ *
+ * Keep this enabled while the real HS-D011 board is not available. It lets a
+ * TLSR8251 test board exercise the MCU, BLE GATT/SPP transport and Modbus/BMS
+ * register map without touching the SH3673510 SPI bus or HS-D011-specific IO.
+ *
+ * When the matching HS-D011 hardware is available, change this to 0 and do a
+ * clean rebuild before board bring-up.
+ */
+#ifndef BMS_AFE_SIMULATION_ENABLE
+#define BMS_AFE_SIMULATION_ENABLE       1u
+#endif
+
 /* SH3673510 SPI: schematic U3/U5 mapping.
  * PB7=MOSI(SDO from Telink), PB6=MISO(SDI to Telink), PD7=SCLK, PD2=CS-M.
  */
