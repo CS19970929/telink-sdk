@@ -25,10 +25,13 @@ static u32 s_pm_sleep_count;
 static u32 s_pm_wake_count;
 static u8 s_pm_guard_active;
 
-/* app.c owns the normal BLE suspend-enter policy. When serial PM is enabled we
- * replace that callback with a wrapper, invoke the original behavior first,
- * then add the UART RX pad as a wake source only while serial is sleep-armed.
+/* app.c owns the normal BLE suspend/deep-sleep policy. Keep its callbacks and
+ * activity timers in the arbitration rather than duplicating the BLE policy.
  */
+#if BLE_APP_PM_ENABLE
+extern u32 advertise_begin_tick;
+extern u32 latest_user_event_tick;
+#endif
 #if BMS_SERIAL_PM_ENABLE && BLE_APP_PM_ENABLE
 extern void task_sleep_enter(u8 e, u8 *p, int n);
 #endif
@@ -78,10 +81,23 @@ static void serial_keep_awake(void)
 {
 #if BLE_APP_PM_ENABLE
 #if BMS_SERIAL_PM_ENABLE
-    if (s_pm_state == SERIAL_PM_ACTIVE)
+    if (s_pm_state == SERIAL_PM_ACTIVE) {
+        u32 now = clock_time();
         bls_pm_setSuspendMask(SUSPEND_DISABLE);
+        /* app.c otherwise enters/requests deep sleep after 60 s of advertising
+         * or connection inactivity. Continuous UART traffic is user activity,
+         * so keep those sample timers fresh until SERIAL_PM_WAKE_ARMED begins.
+         */
+        advertise_begin_tick = now;
+        latest_user_event_tick = now;
+    }
 #elif BMS_SERIAL_KEEP_AWAKE
-    bls_pm_setSuspendMask(SUSPEND_DISABLE);
+    {
+        u32 now = clock_time();
+        bls_pm_setSuspendMask(SUSPEND_DISABLE);
+        advertise_begin_tick = now;
+        latest_user_event_tick = now;
+    }
 #endif
 #endif
 }
