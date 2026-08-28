@@ -164,9 +164,14 @@ static int group_measurement(u16 group, const bms_afe_sample_t *sample, u16 soc,
         return sample->cell_count ? 1 : 0;
 
     case BMS_PARAM_GROUP_SOC_LOW:
+#if BMS_SOC_PROTECT_ENABLE
         *measurement = soc;
         *is_high = 0u;
         return 1;
+#else
+        (void)soc;
+        return 0;
+#endif
 
     default:
         return 0;
