@@ -1,134 +1,122 @@
 # Multi-AFE integration and SH367309 real-data bring-up
 
-## Selection model
+## Current profile
 
-`vendor/ble_sample/bms_board.h` separates physical board wiring from AFE protocol logic. `bms_tools/bms.py` now selects both dimensions explicitly at compile time.
+Current real-board target:
 
-Current default remains:
-
-- board: `legacy-309` / `BMS_BOARD_PROFILE_LEGACY_309`
-- AFE: `sh367309` / `BMS_AFE_MODEL_SH367309`
+- board: `legacy-309`
+- AFE: `sh367309`
 - AFE mode: REAL
 - cells: 10S
-- SH367309 bus: Telink I2C C0/C1, address `0x34`, 100 kHz
-- effective shunt: 1 mOhm (reference D3PRO: two 2 mOhm shunts in parallel)
-- serial Modbus: direct UART PC2/PC3, 115200 8N1, no DE pin
-- BLE Modbus: enabled as before
+- I2C: C0/C1, address `0x34`, 100 kHz
+- shunt: 1 mOhm effective
+- UART Modbus: PC2/PC3, 115200 8N1, slave `0x01`, no DE
+- BLE SPP Modbus: enabled
+- SH367309 runtime MOS control: enabled
+- SH367309 MTP/protection-image rewrite: still disabled
 
-List all supported combinations with:
-
-```powershell
-python bms_tools/bms.py profiles
-```
-
-The current valid combinations are `legacy-309 + sh367309`, `legacy-309 + mock`, `hs-d011 + sh3673510`, and `hs-d011 + mock`. Invalid board/AFE combinations are rejected before compilation.
-
-## What was reused from the proven SH367309 project
-
-The driver follows the existing `telink-new-sdk-b85` implementation for the wire protocol and conversions rather than copying its application-coupled data layer:
-
-- CRC-8 polynomial `0x07`
-- read CRC stream: slave address, register, length, read address, data
-- write CRC stream: slave address, register, data
-- RAM telemetry window `0x40..0x71`
-- CELL1..CELL16 at `0x4E..0x6D`, conversion `raw * 5 / 32` mV
-- current source CADC at `0x6E`, bit15 sign convention (1=discharge, 0=charge)
-- TEMP1..TEMP3 at `0x46/0x48/0x4A`
-- TR at `0x19`, reference resistance `680 + 5*(TR & 0x7f)`
-- BSTATUS1/BSTATUS2 native protection-state mapping
-- direct UART PC2/PC3 at 115200 8N1
-
-The old global `g_stCellInfoReport`, fault recorder, SOC, Modbus and parameter code are intentionally not imported into the chip driver. `sh367309.c` only speaks to the AFE and produces a typed sample; `bms_afe.c` normalizes that sample for the common BMS layer.
-
-## First bench phase is intentionally read-mostly
-
-For the first real-board validation:
-
-```c
-BMS_SH309_RESET_ON_INIT       0
-BMS_SH309_MOS_CONTROL_ENABLE  0
-```
-
-The firmware does not reset/program SH367309 MTP and does not take over FET control. Existing AFE hardware protection configuration remains authoritative. Common software protection evaluates the real sample, but the SH367309 adapter does not advertise `BMS_AFE_FEAT_MOS_CONTROL` yet.
-
-This is deliberate. First establish that the new driver reproduces the proven firmware's cell voltage, temperature, current sign/magnitude and fault status. Then enable FET control and parameter projection as a separate, testable step.
-
-## Build and real-data test
-
-Use the explicit profile so the build log and manifest state unambiguously that this is a real SH367309 image:
+Build explicitly with:
 
 ```powershell
-git pull
-python bms_tools/bms.py profiles
 python bms_tools/bms.py rebuild --board legacy-309 --afe sh367309 --jobs 4
 python bms_tools/bms.py map
 python bms_tools/bms.py verify
 ```
 
-`rebuild` prints the selected board, AFE and `REAL`/`SIMULATED` mode before compilation. The profile-specific artifacts are placed under:
+## Proven SH367309 data path retained
 
-```text
-tc_ble_single_sdk/project/tlsr_tc32/B85/825x_ble_sample_cli/legacy-309_sh367309/
+The new driver keeps the verified legacy wire protocol/conversions while removing application coupling:
+
+- CRC-8 polynomial `0x07`
+- RAM telemetry `0x40..0x71`
+- CELL conversion `raw * 5 / 32` mV
+- CADC current at `0x6E`
+- CADC bit15: 1=discharge, 0=charge
+- common internal current sign: +discharge / -charge
+- TEMP1..TEMP3 decoded from `0x46/0x48/0x4A`
+- BSTATUS/BFLAG normalized by the AFE adapter
+
+## MOS control phase
+
+The first telemetry-only phase has passed on the real TLSR8251 + SH367309 board, so runtime MOS control is now enabled:
+
+```c
+BMS_SH309_RESET_ON_INIT       0
+BMS_SH309_MOS_CONTROL_ENABLE  1
 ```
 
-After the Telink post-check succeeds, the same verified image is also copied to the historical canonical burn path:
+The firmware still does **not** rewrite the SH367309 MTP parameter image at startup.
+
+The legacy D3PRO hardware behavior is preserved:
+
+- `PB6 = AFE_CTL`
+- `PA1 = MCC_C`
+- both pins start LOW
+- CHGMOS/DSGMOS/CADCON are changed with a CONF read-modify-write
+- CONF write is read back and verified
+- `MCC_C` follows the charge MOS request
+- `AFE_CTL` is asserted only after the CONF write succeeds
+- any CONF read/write/verify failure forces the external gate controls LOW
+
+MOS enabling is intentionally deferred until the first complete AFE sample has been evaluated by common software protection. Under normal voltage/current/temperature conditions the default request is CHG=ON, DSG=ON.
+
+The production SOC estimator is not implemented yet, therefore SOC-low protection is temporarily disabled. An uninitialized SOC value must not falsely close the discharge MOS. Re-enable SOC-low protection only together with a real SOC-validity model.
+
+## Build serial / product identity
+
+Every command-line build now derives the Modbus production serial from the selected AFE and the local build date:
 
 ```text
-tc_ble_single_sdk/project/tlsr_tc32/B85/825x_ble_sample_cli/825x_ble_sample.bin
+--afe sh367309   -> SH367309-YYYYMMDD
+--afe sh3673510  -> SH3673510-YYYYMMDD
+--afe mock       -> MOCK-YYYYMMDD
 ```
 
-The manifest records `board=legacy-309`, `afe=sh367309` and `afe_mode=REAL`, and `verify` also checks source/build-input hashes so an artifact cannot silently be mistaken for another profile.
+Example on 2026-08-28:
 
-Flash the canonical `825x_ble_sample.bin` to the TLSR8251 + SH367309 board. Real data can then be checked through either BLE SPP Modbus or the direct PC2/PC3 UART Modbus transport.
+```text
+SH367309-20260828
+SH3673510-20260828
+MOCK-20260828
+```
 
-Useful legacy real-time registers:
+The build log prints the resulting serial. `modbus_rtu.o` is forced to rebuild on every incremental build so the date cannot remain stale across days.
 
-- `0xD000..0xD009`: cell 1..10, mV
-- `0xD020`: maximum cell mV
-- `0xD021`: minimum cell mV
-- `0xD024`: cell delta mV
+Product-identification registers remain:
+
+- serial: `0xC002`, 16 registers / 32 ASCII bytes
+- hardware version follows the board profile (`LEGACY-309` or `HS-D011-V1`)
+- software version remains `V1.1.0`
+
+## Real-board validation
+
+Useful telemetry registers:
+
+- `0xD000..0xD009`: Cell1..Cell10, mV
+- `0xD020`: max cell
+- `0xD021`: min cell
+- `0xD024`: cell delta
 - `0xD025`: pack voltage / 10
-- `0xD026`, `0xD027`: active battery temperatures, encoded as `(degC + 40) * 10`
-- `0xD032`: charge current, 0.1 A units
-- `0xD033`: discharge current, 0.1 A units
+- `0xD026`, `0xD027`: battery temperatures
+- `0xD032`: charge current, 0.1 A
+- `0xD033`: discharge current, 0.1 A
+- `0xD130..`: common protection/MOS diagnostic window
 
-Serial settings: slave address `0x01`, 115200 baud, 8 data bits, no parity, 1 stop bit. The direct legacy UART does not drive PA1. HS-D011 continues to use PA1 only as its RS485 direction pin.
+For the MOS pass verify:
 
-Acceptance for the first bench pass:
+1. Build `legacy-309 + sh367309` and confirm the build log prints `SH367309-YYYYMMDD`.
+2. Power the board under current-limited conditions.
+3. Confirm Cell/Temp/CADC data remain correct before checking MOS state.
+4. Under normal conditions verify both CHG and DSG paths turn on after the first valid sample/protection evaluation.
+5. Read the protection diagnostics and confirm `last_mos_error == 0` and effective CHG/DSG requests are ON.
+6. Read production serial from `0xC002` and verify it matches `SH367309-YYYYMMDD`.
+7. Test Modbus command `0x1102 = 0x0012` to request both MOS OFF, then `0x0011` to request both ON.
+8. Do not perform destructive over-current/short-circuit tests until the AFE hardware-protection/MTP mapping phase is complete and reviewed.
 
-1. AFE stays online continuously; no periodic CRC/read failures.
-2. Ten cell voltages track a DMM/reference firmware within the expected AFE accuracy.
-3. Pack voltage equals the cell sum within integer-conversion tolerance.
-4. TEMP1/TEMP2 track the reference firmware/thermometer.
-5. No-current offset is recorded; charge reports negative `current_ma`, discharge positive internally, while D000 keeps the legacy split charge/discharge registers.
-6. Apply a known small charge/discharge current and confirm scaling before any protection/MOS-control work.
-7. Native BSTATUS protection bits agree with the known-good firmware when a safe fault-injection test is performed.
-8. Send the same Modbus read through BLE and PC2/PC3 UART and confirm the register payloads match.
+## UART note
 
-## Low-power note for serial validation
+PC2/PC3 UART Modbus is compiled and enabled on the legacy 309 profile. Low-power asynchronous UART wake without losing the first byte is still a separate release acceptance item; keep the device active during the first UART validation.
 
-The current project keeps Telink BLE suspend enabled and arms the BMS sampling deadline. That protects the 100 ms BMS scheduler, but it is not yet proof that an asynchronous UART request can wake the MCU without losing its first byte. During initial serial validation, keep the device active/connected and verify repeated requests. UART/low-power arbitration remains a separate acceptance item before release.
+## Remaining SH367309 work
 
-## Switching profiles
-
-Examples:
-
-```powershell
-# Current real 309 board
-python bms_tools/bms.py rebuild --board legacy-309 --afe sh367309 --jobs 4
-
-# Same legacy board with fake AFE data
-python bms_tools/bms.py rebuild --board legacy-309 --afe mock --jobs 4
-
-# HS-D011 real SH3673510 board
-python bms_tools/bms.py rebuild --board hs-d011 --afe sh3673510 --jobs 4
-
-# HS-D011 application stack without touching the real AFE
-python bms_tools/bms.py rebuild --board hs-d011 --afe mock --jobs 4
-```
-
-Each combination has its own object/output directory, preventing incremental builds from reusing objects compiled with a different AFE macro.
-
-## Next SH367309 phase
-
-After telemetry passes, enable and verify in this order: read-modify-write MOS control with CONF readback; native protection/MTP parameter projection with VPRO gating and per-byte verification; fault-clear semantics from verified documentation/bench behavior; then UART wake/low-power arbitration without losing the first Modbus byte.
+After MOS control passes, continue with native protection/MTP parameter projection, VPRO/program/readback safety, verified fault-clear semantics, UART/low-power arbitration, then the production SOC/SOH subsystem.
