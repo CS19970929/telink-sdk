@@ -40,6 +40,44 @@ static u16 be16(const u8 *p)
     return (u16)(((u16)p[0] << 8) | p[1]);
 }
 
+#if BMS_SH309_MOS_CONTROL_ENABLE
+static void sh309_gate_gpio_init(void)
+{
+    gpio_set_func(BMS_SH309_AFE_CTL_PIN, AS_GPIO);
+    gpio_set_input_en(BMS_SH309_AFE_CTL_PIN, 0);
+    gpio_set_output_en(BMS_SH309_AFE_CTL_PIN, 1);
+
+    gpio_set_func(BMS_SH309_MCC_C_PIN, AS_GPIO);
+    gpio_set_input_en(BMS_SH309_MCC_C_PIN, 0);
+    gpio_set_output_en(BMS_SH309_MCC_C_PIN, 1);
+
+    /* Match the proven D3PRO bring-up: AFE_CTL and MCC_C start low. The power
+     * path is not enabled until a complete AFE sample has been evaluated by the
+     * common protection layer and the SH367309 CONF write has verified.
+     */
+    gpio_write(BMS_SH309_MCC_C_PIN, !BMS_SH309_MCC_C_ACTIVE_LEVEL);
+    gpio_write(BMS_SH309_AFE_CTL_PIN, !BMS_SH309_GATE_ACTIVE_LEVEL);
+}
+
+static void sh309_gate_safe_off(void)
+{
+    gpio_write(BMS_SH309_MCC_C_PIN, !BMS_SH309_MCC_C_ACTIVE_LEVEL);
+    gpio_write(BMS_SH309_AFE_CTL_PIN, !BMS_SH309_GATE_ACTIVE_LEVEL);
+}
+
+static void sh309_gate_apply(u8 charge_on, u8 discharge_on)
+{
+    /* Reference firmware drives MCC_C high only with CHGMOS, while AFE_CTL is
+     * the common external gate/driver enable. Keep that board behavior outside
+     * the register bit calculation and assert the external gate last.
+     */
+    gpio_write(BMS_SH309_MCC_C_PIN,
+               charge_on ? BMS_SH309_MCC_C_ACTIVE_LEVEL : !BMS_SH309_MCC_C_ACTIVE_LEVEL);
+    gpio_write(BMS_SH309_AFE_CTL_PIN,
+               (charge_on || discharge_on) ? BMS_SH309_GATE_ACTIVE_LEVEL : !BMS_SH309_GATE_ACTIVE_LEVEL);
+}
+#endif
+
 int sh367309_read(u8 reg, u8 *data, u8 len)
 {
     u8 rx[SH309_MAX_XFER_LEN + 1u];
@@ -197,6 +235,10 @@ int sh367309_init(void)
     s_initialized = 0u;
     s_tr_ref_x100 = 0u;
 
+#if BMS_SH309_MOS_CONTROL_ENABLE
+    sh309_gate_gpio_init();
+#endif
+
     i2c_gpio_set(BMS_SH309_I2C_GROUP);
     i2c_master_init(BMS_SH309_I2C_ADDR,
                     (unsigned char)(CLOCK_SYS_CLOCK_HZ / (4u * BMS_SH309_I2C_HZ)));
@@ -285,13 +327,31 @@ int sh367309_set_mos(u8 charge_on, u8 discharge_on)
 {
 #if BMS_SH309_MOS_CONTROL_ENABLE
     u8 conf;
-    int rc = sh367309_read(SH367309_REG_CONF, &conf, 1u);
-    if (rc != SH367309_OK) return rc;
+    int rc;
+
+    if (!s_initialized) {
+        sh309_gate_safe_off();
+        return SH367309_ERR_NOT_READY;
+    }
+
+    rc = sh367309_read(SH367309_REG_CONF, &conf, 1u);
+    if (rc != SH367309_OK) {
+        sh309_gate_safe_off();
+        return rc;
+    }
 
     conf |= SH309_CONF_CADCON;
     if (charge_on) conf |= SH309_CONF_CHGMOS; else conf &= (u8)~SH309_CONF_CHGMOS;
     if (discharge_on) conf |= SH309_CONF_DSGMOS; else conf &= (u8)~SH309_CONF_DSGMOS;
-    return write_byte_verified(SH367309_REG_CONF, conf);
+
+    rc = write_byte_verified(SH367309_REG_CONF, conf);
+    if (rc != SH367309_OK) {
+        sh309_gate_safe_off();
+        return rc;
+    }
+
+    sh309_gate_apply(charge_on ? 1u : 0u, discharge_on ? 1u : 0u);
+    return SH367309_OK;
 #else
     (void)charge_on;
     (void)discharge_on;
