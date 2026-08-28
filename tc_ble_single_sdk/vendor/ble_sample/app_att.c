@@ -6,10 +6,33 @@
 #include "btname_modbus.h"
 #include <string.h>
 
-/* UUIDs intentionally match the previous Telink BMS implementation. */
-static const u8 TelinkSppServiceUUID[16] = WRAPPING_BRACES(TELINK_SPP_UUID_SERVICE);
-static const u8 TelinkSppDataServer2ClientUUID[16] = WRAPPING_BRACES(TELINK_SPP_DATA_SERVER2CLIENT);
-static const u8 TelinkSppDataClient2ServerUUID[16] = WRAPPING_BRACES(TELINK_SPP_DATA_CLIENT2SERVER);
+/*
+ * BMS BLE transport contract.
+ *
+ * The proven telink-new-sdk-b85 BMS firmware and its PC/APP clients use the
+ * Nordic UART Service UUID family.  Do not use the stock Telink SDK SPP UUIDs
+ * here: the unmodified V3.4.2.8 SDK defines TELINK_SPP_UUID_SERVICE as
+ * 001.../0C0D... and clients looking for 6E400001... will not discover it.
+ *
+ * UUID byte order below is the little-endian ATT representation used by the
+ * Telink stack:
+ *   service  : 6E400001-B5A3-F393-E0A9-E50E24DCCA9E
+ *   request  : 6E400002-B5A3-F393-E0A9-E50E24DCCA9E (phone -> BMS, write)
+ *   response : 6E400003-B5A3-F393-E0A9-E50E24DCCA9E (BMS -> phone, notify)
+ *
+ * Keep these BMS-specific UUIDs local instead of modifying the SDK-global
+ * uuid.h so other Telink samples/services retain their vendor defaults.
+ */
+#define BMS_SPP_UUID_SERVICE \
+    0x9e,0xca,0xdc,0x24,0x0e,0xe5,0xa9,0xe0,0x93,0xf3,0xa3,0xb5,0x01,0x00,0x40,0x6e
+#define BMS_SPP_UUID_REQUEST \
+    0x9e,0xca,0xdc,0x24,0x0e,0xe5,0xa9,0xe0,0x93,0xf3,0xa3,0xb5,0x02,0x00,0x40,0x6e
+#define BMS_SPP_UUID_RESPONSE \
+    0x9e,0xca,0xdc,0x24,0x0e,0xe5,0xa9,0xe0,0x93,0xf3,0xa3,0xb5,0x03,0x00,0x40,0x6e
+
+static const u8 BmsSppServiceUUID[16] = WRAPPING_BRACES(BMS_SPP_UUID_SERVICE);
+static const u8 BmsSppRequestUUID[16] = WRAPPING_BRACES(BMS_SPP_UUID_REQUEST);
+static const u8 BmsSppResponseUUID[16] = WRAPPING_BRACES(BMS_SPP_UUID_RESPONSE);
 
 static u8 SppNotifyCCC[2] = {0, 0};
 static u8 SppWriteData[1] = {0};
@@ -17,19 +40,19 @@ static u8 SppNotifyData[1] = {0};
 static const u8 TelinkSPPS2CDescriptor[] = "Telink SPP: Module->Phone";
 static const u8 TelinkSPPC2SDescriptor[] = "Telink SPP: Phone->Module";
 
-/* Previous BMS uses the historical Telink UUID names but reverses the data
- * direction at the ATT property level: phone writes S2C UUID, module notifies
- * C2S UUID. Keep this exactly for existing apps/tools.
+/* Match the already-deployed BMS client contract exactly: UUID ...0002 is the
+ * request/write characteristic and UUID ...0003 is response/notify.
+ * Historical handle names are retained to avoid changing the protocol code.
  */
 static const u8 TelinkSppWriteCharVal[19] = {
     CHAR_PROP_READ | CHAR_PROP_WRITE_WITHOUT_RSP | CHAR_PROP_WRITE,
     U16_LO(SPP_SERVER_TO_CLIENT_DP_H), U16_HI(SPP_SERVER_TO_CLIENT_DP_H),
-    TELINK_SPP_DATA_SERVER2CLIENT
+    BMS_SPP_UUID_REQUEST
 };
 static const u8 TelinkSppNotifyCharVal[19] = {
     CHAR_PROP_READ | CHAR_PROP_NOTIFY,
     U16_LO(SPP_CLIENT_TO_SERVER_DP_H), U16_HI(SPP_CLIENT_TO_SERVER_DP_H),
-    TELINK_SPP_DATA_CLIENT2SERVER
+    BMS_SPP_UUID_RESPONSE
 };
 
 static const u16 clientCharacterCfgUUID = GATT_UUID_CLIENT_CHAR_CFG;
@@ -167,13 +190,13 @@ static const attribute_t my_Attributes[] = {
     {0, ATT_PERMISSIONS_READ, 2, sizeof(my_batVal), (u8 *)&my_batCharUUID, (u8 *)my_batVal, 0, 0},
     {0, ATT_PERMISSIONS_RDWR, 2, sizeof(batteryValueInCCC), (u8 *)&clientCharacterCfgUUID, (u8 *)batteryValueInCCC, 0, 0},
 
-    /* Telink SPP: same handles/directions as existing BMS apps. */
-    {8, ATT_PERMISSIONS_READ, 2, 16, (u8 *)&my_primaryServiceUUID, (u8 *)&TelinkSppServiceUUID, 0, 0},
+    /* BMS SPP/NUS compatibility service used by all existing BMS clients. */
+    {8, ATT_PERMISSIONS_READ, 2, 16, (u8 *)&my_primaryServiceUUID, (u8 *)&BmsSppServiceUUID, 0, 0},
     {0, ATT_PERMISSIONS_READ, 2, sizeof(TelinkSppWriteCharVal), (u8 *)&my_characterUUID, (u8 *)TelinkSppWriteCharVal, 0, 0},
-    {0, ATT_PERMISSIONS_RDWR, 16, sizeof(SppWriteData), (u8 *)&TelinkSppDataServer2ClientUUID, (u8 *)SppWriteData, (att_readwrite_callback_t)bms_spp_write_cb, 0},
+    {0, ATT_PERMISSIONS_RDWR, 16, sizeof(SppWriteData), (u8 *)&BmsSppRequestUUID, (u8 *)SppWriteData, (att_readwrite_callback_t)bms_spp_write_cb, 0},
     {0, ATT_PERMISSIONS_READ, 2, sizeof(TelinkSPPS2CDescriptor), (u8 *)&userdesc_UUID, (u8 *)TelinkSPPS2CDescriptor, 0, 0},
     {0, ATT_PERMISSIONS_READ, 2, sizeof(TelinkSppNotifyCharVal), (u8 *)&my_characterUUID, (u8 *)TelinkSppNotifyCharVal, 0, 0},
-    {0, ATT_PERMISSIONS_READ, 16, sizeof(SppNotifyData), (u8 *)&TelinkSppDataClient2ServerUUID, (u8 *)SppNotifyData, 0, 0},
+    {0, ATT_PERMISSIONS_READ, 16, sizeof(SppNotifyData), (u8 *)&BmsSppResponseUUID, (u8 *)SppNotifyData, 0, 0},
     {0, ATT_PERMISSIONS_RDWR, 2, sizeof(SppNotifyCCC), (u8 *)&clientCharacterCfgUUID, (u8 *)SppNotifyCCC, 0, 0},
     {0, ATT_PERMISSIONS_READ, 2, sizeof(TelinkSPPC2SDescriptor), (u8 *)&userdesc_UUID, (u8 *)TelinkSPPC2SDescriptor, 0, 0},
 
