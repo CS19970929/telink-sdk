@@ -1,6 +1,6 @@
 #include "bms_protect.h"
 #include "bms_param.h"
-#include "hs_d011_board.h"
+#include "bms_board.h"
 #include <string.h>
 
 #define BMS_PROTECT_LEVEL_COUNT 3u
@@ -66,8 +66,8 @@ static int external_temp_extremes(const bms_afe_sample_t *sample, s32 *min_temp,
     if (!sample || !min_temp || !max_temp) return 0;
     bms_afe_get_info(&info);
 
-    /* TS4 is the dedicated MOS sensor on this board. Battery charge/discharge
-     * temperature protection therefore uses enabled TS1..TS3 only.
+    /* TS4 is the dedicated MOS sensor on boards that provide it. Battery
+     * charge/discharge temperature protection therefore uses enabled TS1..TS3.
      */
     for (i = 0u; i < 3u && i < BMS_AFE_TEMP_CHANNELS; ++i) {
         if ((info.temp_mask & BIT(i)) == 0u) continue;
@@ -109,7 +109,7 @@ static int group_measurement(u16 group, const bms_afe_sample_t *sample, u16 soc,
 
     case BMS_PARAM_GROUP_BUS_OV:
     case BMS_PARAM_GROUP_BUS_UV:
-        return 0; /* Semantics intentionally unresolved in this project. */
+        return 0;
 
     case BMS_PARAM_GROUP_CHG_OC:
         if (!sample->current_ma_valid || sample->current_ma >= 0) return 0;
@@ -192,10 +192,6 @@ static void update_level(u16 group, u8 level, s32 measure, u8 is_high,
 
     if (is_high) {
         trigger = (measure >= threshold) ? 1u : 0u;
-        /* A shared recovery can be invalid for a lower warning level (for
-         * example CHG_OT L1=40C with recovery=50C). In that case fall back to
-         * threshold crossing instead of creating an oscillating hysteresis.
-         */
         clear = (recovery < threshold) ? (measure <= recovery) : (measure < threshold);
     } else {
         trigger = (measure <= threshold) ? 1u : 0u;
@@ -297,25 +293,17 @@ static int apply_mos(void)
                    group_bit(BMS_PARAM_GROUP_MOS_OT)) ? 1u : 0u;
 
 #if (BMS_PROTECT_OPPOSITE_REOPEN_ENABLE)
-    /* Common-port behavior: a directional software protection may close one
-     * MOS while current subsequently reverses. Re-open the opposite-current
-     * path so the protected battery can recover. A common MOS-temperature veto
-     * is never overridden. The AFE remains free to reject this request.
-     */
     if (!common_veto && s_last_current_valid) {
         if (s_last_current_ma > 0 && s_status.user_charge_on)
-            charge_on = 1u;       /* discharging: do not block through CHG path */
+            charge_on = 1u;
         else if (s_last_current_ma < 0 && s_status.user_discharge_on)
-            discharge_on = 1u;    /* charging: do not block through DSG path */
+            discharge_on = 1u;
     }
 #endif
 
     s_status.effective_charge_on = charge_on;
     s_status.effective_discharge_on = discharge_on;
 
-    /* Enabling is deferred until at least one complete AFE sample has been
-     * evaluated. Explicit OFF requests are safe and may be applied immediately.
-     */
     if (!s_have_sample && (charge_on || discharge_on))
         return 1;
 
