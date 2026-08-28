@@ -68,12 +68,19 @@
  * UART RX is released and the physical RX pin becomes a low-level wake pad.
  * The wake frame may be lost by design; the next Modbus request is processed
  * after UART/DMA are restored. This policy is common to direct UART and RS485.
+ *
+ * A short quiet guard is deliberately added after the 3-second timeout. It
+ * prevents the PM transition from resetting UART/DMA at the same instant a new
+ * request is arriving (a common race when a host polls close to the 3 s edge).
  */
 #ifndef BMS_SERIAL_PM_ENABLE
 #define BMS_SERIAL_PM_ENABLE            1u
 #endif
 #ifndef BMS_SERIAL_IDLE_SLEEP_MS
 #define BMS_SERIAL_IDLE_SLEEP_MS        3000u
+#endif
+#ifndef BMS_SERIAL_SLEEP_GUARD_MS
+#define BMS_SERIAL_SLEEP_GUARD_MS       20u
 #endif
 #ifndef BMS_SERIAL_WAKE_LEVEL
 #define BMS_SERIAL_WAKE_LEVEL           Level_Low
