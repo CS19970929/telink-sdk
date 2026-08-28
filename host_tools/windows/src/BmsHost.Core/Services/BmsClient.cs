@@ -161,19 +161,20 @@ public sealed class BmsClient
     }
 
     private static (string Name, string Unit, ProtectionEncoding Encoding)[] ProtectionDescriptors() =>
-    [
-        ("Cell OV", "mV", ProtectionEncoding.Direct),
-        ("Cell UV", "mV", ProtectionEncoding.Direct),
-        ("Bus OV", "mV", ProtectionEncoding.Direct),
-        ("Bus UV", "mV", ProtectionEncoding.Direct),
-        ("Charge OC", "A", ProtectionEncoding.CurrentA),
-        ("Discharge OC", "A", ProtectionEncoding.CurrentA),
-        ("Charge OT", "°C", ProtectionEncoding.TemperatureC),
-        ("Charge UT", "°C", ProtectionEncoding.TemperatureC),
-        ("Discharge OT", "°C", ProtectionEncoding.TemperatureC),
-        ("Discharge UT", "°C", ProtectionEncoding.TemperatureC),
-        ("MOS OT", "°C", ProtectionEncoding.TemperatureC),
-        ("Cell Delta", "mV", ProtectionEncoding.Direct),
-        ("SOC Low", "%", ProtectionEncoding.Direct),
-    ];
+        new (string Name, string Unit, ProtectionEncoding Encoding)[]
+        {
+            ("Cell OV", "mV", ProtectionEncoding.Direct),
+            ("Cell UV", "mV", ProtectionEncoding.Direct),
+            ("Bus OV", "mV", ProtectionEncoding.Direct),
+            ("Bus UV", "mV", ProtectionEncoding.Direct),
+            ("Charge OC", "A", ProtectionEncoding.CurrentA),
+            ("Discharge OC", "A", ProtectionEncoding.CurrentA),
+            ("Charge OT", "°C", ProtectionEncoding.TemperatureC),
+            ("Charge UT", "°C", ProtectionEncoding.TemperatureC),
+            ("Discharge OT", "°C", ProtectionEncoding.TemperatureC),
+            ("Discharge UT", "°C", ProtectionEncoding.TemperatureC),
+            ("MOS OT", "°C", ProtectionEncoding.TemperatureC),
+            ("Cell Delta", "mV", ProtectionEncoding.Direct),
+            ("SOC Low", "%", ProtectionEncoding.Direct),
+        };
 }
