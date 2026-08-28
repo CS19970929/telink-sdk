@@ -8,9 +8,59 @@
 #include "stack/ble/ble.h"
 #include <string.h>
 
+#define BMS_SYS_TICKS_PER_US ((u32)(CLOCK_SYS_CLOCK_HZ / 1000000u))
+
 static bms_project_state_t g_bms;
 static u32 s_afe_poll_tick;
 static u8 s_afe_fail_count;
+
+static u32 bms_ticks_to_us(u32 ticks)
+{
+    return (BMS_SYS_TICKS_PER_US != 0u) ? (ticks / BMS_SYS_TICKS_PER_US) : 0u;
+}
+
+/*
+ * Keep Telink's BLE suspend enabled, but make BMS timing authoritative.
+ *
+ * The BLE controller may otherwise sleep according to advertising/connection
+ * timing and slave latency. bls_pm_setAppWakeupLowPower() adds an application
+ * deadline; the controller can still wake earlier for BLE, but may not sleep
+ * beyond the next BMS sample/protection deadline.
+ *
+ * This is intentionally based on the existing AFE polling deadline. Future SOC
+ * and storage tasks should contribute their own deadlines and the earliest one
+ * should win. SOC must use measured elapsed time, not assume that every callback
+ * ran at an exact nominal period.
+ */
+static void bms_scheduler_arm_next_wakeup(void)
+{
+#if BLE_APP_PM_ENABLE && BMS_PM_APP_WAKE_ENABLE
+    const u32 period_ticks = (u32)(BMS_AFE_POLL_PERIOD_US * BMS_SYS_TICKS_PER_US);
+    const u32 min_lead_ticks = (u32)(BMS_PM_MIN_WAKE_LEAD_US * BMS_SYS_TICKS_PER_US);
+    u32 now = clock_time();
+    u32 elapsed = (u32)(now - s_afe_poll_tick);
+    u32 remain;
+
+    if (period_ticks == 0u) {
+        bls_pm_setAppWakeupLowPower(0u, 0u);
+        g_bms.pm_app_wakeup_tick = 0u;
+        return;
+    }
+
+    if (elapsed >= period_ticks) {
+        remain = min_lead_ticks;
+    } else {
+        remain = period_ticks - elapsed;
+        if (remain < min_lead_ticks)
+            remain = min_lead_ticks;
+    }
+
+    g_bms.pm_app_wakeup_tick = now + remain;
+    bls_pm_setAppWakeupLowPower(g_bms.pm_app_wakeup_tick, 1u);
+#else
+    g_bms.pm_app_wakeup_tick = 0u;
+#endif
+}
 
 static void board_gpio_init(void)
 {
@@ -104,7 +154,13 @@ void bms_project_init(void)
 #if !BMS_AFE_SIMULATION_ENABLE
     modbus_uart_init();
 #endif
+
     s_afe_poll_tick = clock_time();
+    g_bms.afe_sample_dt_us = 0u;
+    g_bms.scheduler_overrun_count = 0u;
+
+    /* Arm before entering the application's first BLE PM cycle. */
+    bms_scheduler_arm_next_wakeup();
 }
 
 void bms_project_process(void)
@@ -117,7 +173,17 @@ void bms_project_process(void)
     bms_param_process();
 
     if (clock_time_exceed(s_afe_poll_tick, BMS_AFE_POLL_PERIOD_US)) {
-        s_afe_poll_tick = clock_time();
+        u32 now = clock_time();
+        u32 elapsed_ticks = (u32)(now - s_afe_poll_tick);
+        u32 elapsed_us = bms_ticks_to_us(elapsed_ticks);
+
+        s_afe_poll_tick = now;
+        g_bms.afe_sample_dt_us = elapsed_us;
+
+        if (elapsed_us > (BMS_AFE_POLL_PERIOD_US + BMS_SCHEDULER_OVERRUN_TOLERANCE_US)) {
+            ++g_bms.scheduler_overrun_count;
+        }
+
         rc = bms_afe_sample(&g_bms.afe);
         if (rc != 0) {
             g_bms.afe.online = 0u;
@@ -139,6 +205,12 @@ void bms_project_process(void)
             bms_protect_update(&g_bms.afe, g_bms.soc);
         }
     }
+
+    /* main() calls main_loop() (and therefore blt_pm_proc()) before the next
+     * bms_project_process() pass. Arm the next application deadline here so it
+     * is already active when Telink PM decides how long to suspend.
+     */
+    bms_scheduler_arm_next_wakeup();
 }
 
 void bms_project_irq_handler(void)
