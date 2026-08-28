@@ -15,6 +15,14 @@
 #define BMS_PROTECT_STATUS_MAGIC       0x5052u /* 'PR' */
 #define BMS_PROTECT_STATUS_VERSION     0x0001u
 
+/* Serial low-power diagnostics. This is a new read-only window and does not
+ * overlap the existing D120 realtime or D130 protection status blocks.
+ */
+#define BMS_SERIAL_PM_REG_BASE         0xD140u
+#define BMS_SERIAL_PM_REG_COUNT        8u
+#define BMS_SERIAL_PM_MAGIC            0x5350u /* 'SP' */
+#define BMS_SERIAL_PM_VERSION          0x0001u
+
 #define PROD_SN_REG_BASE               0xC002u
 #define PROD_SN_REG_COUNT              16u
 #define PROD_HW_VER_REG_BASE           (PROD_SN_REG_BASE + PROD_SN_REG_COUNT)
