@@ -54,6 +54,8 @@ A new read-only Modbus block is available at `0xD140`:
 | `D146` | wake_count low word |
 | `D147` | wake_count high word |
 
+Use **BLE Modbus** to observe `D140..D147` while testing serial sleep. Polling this block over UART itself counts as serial activity and would keep the serial transport ACTIVE.
+
 ## Bench procedure for TLSR8251 + SH367309
 
 Build the real 309 profile:
@@ -67,14 +69,16 @@ Then flash the canonical `825x_ble_sample.bin`.
 
 Test sequence:
 
-1. Immediately after boot, poll `D140..D147`. `D142.bit0` should be 1 (ACTIVE).
-2. Stop all UART requests for more than 3 seconds. `sleep_count` should increment once when the serial transport arms PC3 wake. Measuring current should show the return to the normal BLE/BMS suspend regime.
-3. Send one Modbus request. It is allowed to time out because it is the wake frame.
-4. Retry the request. The second request must receive a normal Modbus response.
-5. Read `D140..D147`: `wake_count` must have incremented and `D142.bit0` should be 1 while the 3-second active window is running.
-6. Continue polling at intervals shorter than 3 seconds; the link must remain active and responsive.
-7. Stop polling again for more than 3 seconds; `sleep_count` must increment again and low-power current must return.
+1. Immediately after boot, read `D140..D147` through BLE. `D142.bit0` should be 1 (ACTIVE).
+2. Do not send any UART request for more than 3 seconds. Observe through BLE that `D142.bit1` becomes 1 and `sleep_count` increments once. Measuring current should show the return to the normal BLE/BMS suspend regime.
+3. Send one UART Modbus request. It is allowed to time out because it is the wake frame.
+4. Retry the UART request. The second request must receive a normal Modbus response.
+5. Read `D140..D147` through BLE: `wake_count` must have incremented and `D142.bit0` should be 1 while the 3-second active window is running.
+6. Continue UART polling at intervals shorter than 3 seconds; the link must remain active and responsive.
+7. Stop UART polling again for more than 3 seconds. Observe through BLE that `sleep_count` increments again and low-power current returns.
 8. Repeat wake/sleep cycles at least 100 times before considering the behavior bench-validated.
+
+If BLE is not available during a UART-only bench test, infer the transition from current consumption and then read the counters after the UART has been woken; do not continuously read `D140..D147` over UART while trying to prove the 3-second idle transition.
 
 ## Acceptance
 
