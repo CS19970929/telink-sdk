@@ -2,19 +2,26 @@
 
 ## Selection model
 
-`vendor/ble_sample/bms_board.h` separates physical board wiring from AFE protocol logic.
+`vendor/ble_sample/bms_board.h` separates physical board wiring from AFE protocol logic. `bms_tools/bms.py` now selects both dimensions explicitly at compile time.
 
-Current default:
+Current default remains:
 
-- board: `BMS_BOARD_PROFILE_LEGACY_309`
-- AFE: `BMS_AFE_MODEL_SH367309`
+- board: `legacy-309` / `BMS_BOARD_PROFILE_LEGACY_309`
+- AFE: `sh367309` / `BMS_AFE_MODEL_SH367309`
+- AFE mode: REAL
 - cells: 10S
 - SH367309 bus: Telink I2C C0/C1, address `0x34`, 100 kHz
 - effective shunt: 1 mOhm (reference D3PRO: two 2 mOhm shunts in parallel)
 - serial Modbus: direct UART PC2/PC3, 115200 8N1, no DE pin
 - BLE Modbus: enabled as before
 
-To return to HS-D011, select `BMS_BOARD_PROFILE_HS_D011`; its default AFE is SH3673510. HS-D011 uses the same Modbus UART core but enables PA1 direction control for its half-duplex RS485 transceiver. `BMS_AFE_MODEL_SIMULATED` remains available independently of the board profile.
+List all supported combinations with:
+
+```powershell
+python bms_tools/bms.py profiles
+```
+
+The current valid combinations are `legacy-309 + sh367309`, `legacy-309 + mock`, `hs-d011 + sh3673510`, and `hs-d011 + mock`. Invalid board/AFE combinations are rejected before compilation.
 
 ## What was reused from the proven SH367309 project
 
@@ -48,14 +55,31 @@ This is deliberate. First establish that the new driver reproduces the proven fi
 
 ## Build and real-data test
 
+Use the explicit profile so the build log and manifest state unambiguously that this is a real SH367309 image:
+
 ```powershell
 git pull
-python bms_tools/bms.py rebuild --jobs 1
+python bms_tools/bms.py profiles
+python bms_tools/bms.py rebuild --board legacy-309 --afe sh367309 --jobs 4
 python bms_tools/bms.py map
 python bms_tools/bms.py verify
 ```
 
-Flash the generated `825x_ble_sample.bin` to the TLSR8251 + SH367309 board. Real data can then be checked through either BLE SPP Modbus or the direct PC2/PC3 UART Modbus transport.
+`rebuild` prints the selected board, AFE and `REAL`/`SIMULATED` mode before compilation. The profile-specific artifacts are placed under:
+
+```text
+tc_ble_single_sdk/project/tlsr_tc32/B85/825x_ble_sample_cli/legacy-309_sh367309/
+```
+
+After the Telink post-check succeeds, the same verified image is also copied to the historical canonical burn path:
+
+```text
+tc_ble_single_sdk/project/tlsr_tc32/B85/825x_ble_sample_cli/825x_ble_sample.bin
+```
+
+The manifest records `board=legacy-309`, `afe=sh367309` and `afe_mode=REAL`, and `verify` also checks source/build-input hashes so an artifact cannot silently be mistaken for another profile.
+
+Flash the canonical `825x_ble_sample.bin` to the TLSR8251 + SH367309 board. Real data can then be checked through either BLE SPP Modbus or the direct PC2/PC3 UART Modbus transport.
 
 Useful legacy real-time registers:
 
@@ -83,7 +107,27 @@ Acceptance for the first bench pass:
 
 ## Low-power note for serial validation
 
-The current project keeps Telink BLE suspend enabled and arms the BMS sampling deadline. That protects the 100 ms BMS scheduler, but it is not yet proof that an asynchronous UART request can wake the MCU without losing its first byte. During initial serial validation, keep the device active/connected and verify repeated requests. UART/low-power arbitration will be a separate acceptance item before release.
+The current project keeps Telink BLE suspend enabled and arms the BMS sampling deadline. That protects the 100 ms BMS scheduler, but it is not yet proof that an asynchronous UART request can wake the MCU without losing its first byte. During initial serial validation, keep the device active/connected and verify repeated requests. UART/low-power arbitration remains a separate acceptance item before release.
+
+## Switching profiles
+
+Examples:
+
+```powershell
+# Current real 309 board
+python bms_tools/bms.py rebuild --board legacy-309 --afe sh367309 --jobs 4
+
+# Same legacy board with fake AFE data
+python bms_tools/bms.py rebuild --board legacy-309 --afe mock --jobs 4
+
+# HS-D011 real SH3673510 board
+python bms_tools/bms.py rebuild --board hs-d011 --afe sh3673510 --jobs 4
+
+# HS-D011 application stack without touching the real AFE
+python bms_tools/bms.py rebuild --board hs-d011 --afe mock --jobs 4
+```
+
+Each combination has its own object/output directory, preventing incremental builds from reusing objects compiled with a different AFE macro.
 
 ## Next SH367309 phase
 
