@@ -4,7 +4,7 @@
 #include "drivers.h"
 #include <string.h>
 
-#if BMS_RS485_ENABLE
+#if BMS_SERIAL_ENABLE
 
 static volatile u8 s_rx_ready;
 static volatile u8 s_tx_dma_done;
@@ -13,14 +13,18 @@ static mb_dma_pkt_t s_tx_pkt;
 static u8 s_rsp[512];
 static u32 s_last_rearm_tick;
 
-static void rs485_rx_mode(void)
+static void serial_rx_mode(void)
 {
-    gpio_write(BMS_RS485_EN_PIN, 0);
+#if BMS_SERIAL_DE_ENABLE
+    gpio_write(BMS_SERIAL_DE_PIN, 0);
+#endif
 }
 
-static void rs485_tx_mode(void)
+static void serial_tx_mode(void)
 {
-    gpio_write(BMS_RS485_EN_PIN, 1);
+#if BMS_SERIAL_DE_ENABLE
+    gpio_write(BMS_SERIAL_DE_PIN, 1);
+#endif
 }
 
 static void rx_rearm(void)
@@ -34,14 +38,20 @@ void modbus_uart_init(void)
     memset(&s_rx_pkt, 0, sizeof(s_rx_pkt));
     memset(&s_tx_pkt, 0, sizeof(s_tx_pkt));
 
-    gpio_set_func(BMS_RS485_EN_PIN, AS_GPIO);
-    gpio_set_input_en(BMS_RS485_EN_PIN, 0);
-    gpio_set_output_en(BMS_RS485_EN_PIN, 1);
-    rs485_rx_mode();
+#if BMS_SERIAL_DE_ENABLE
+    gpio_set_func(BMS_SERIAL_DE_PIN, AS_GPIO);
+    gpio_set_input_en(BMS_SERIAL_DE_PIN, 0);
+    gpio_set_output_en(BMS_SERIAL_DE_PIN, 1);
+    serial_rx_mode();
+#endif
 
-    uart_gpio_set(BMS_RS485_TX_PIN, BMS_RS485_RX_PIN);
+    uart_gpio_set(BMS_SERIAL_TX_PIN, BMS_SERIAL_RX_PIN);
     uart_reset();
-    uart_init(9, 13, PARITY_NONE, STOP_BIT_ONE); /* 115200 8N1 @16 MHz */
+    /* Both current board profiles use 115200 8N1 at 16 MHz. Keep the low-level
+     * divisor explicit because this matches the proven legacy firmware and the
+     * existing HS-D011 implementation.
+     */
+    uart_init(9, 13, PARITY_NONE, STOP_BIT_ONE);
     uart_dma_enable(1, 1);
     uart_irq_enable(0, 0);
     rx_rearm();
@@ -55,6 +65,7 @@ void modbus_uart_init(void)
 void modbus_uart_irq_proc(void)
 {
     u8 irqsrc = dma_chn_irq_status_get();
+
     if (irqsrc & FLD_DMA_CHN_UART_RX) {
         dma_chn_irq_status_clr(FLD_DMA_CHN_UART_RX);
         if (s_rx_pkt.dma_len > 0u && s_rx_pkt.dma_len <= sizeof(s_rx_pkt.data))
@@ -62,6 +73,7 @@ void modbus_uart_irq_proc(void)
         else
             rx_rearm();
     }
+
     if (irqsrc & FLD_DMA_CHN_UART_TX) {
         dma_chn_irq_status_clr(FLD_DMA_CHN_UART_TX);
         s_tx_dma_done = 1u;
@@ -77,8 +89,13 @@ void modbus_uart_send(const u8 *data, u32 len)
     s_tx_pkt.dma_len = len;
     memcpy(s_tx_pkt.data, data, len);
     s_tx_dma_done = 0u;
-    rs485_tx_mode();
+    serial_tx_mode();
+#if BMS_SERIAL_DE_ENABLE
+    /* Isolated half-duplex transceiver needs a short DE settle time. Direct
+     * UART profiles compile this delay out entirely.
+     */
     sleep_us(2);
+#endif
     uart_send_dma((u8 *)&s_tx_pkt);
 }
 
@@ -86,7 +103,7 @@ void modbus_uart_process(void)
 {
     if (s_tx_dma_done && !uart_tx_is_busy()) {
         s_tx_dma_done = 0u;
-        rs485_rx_mode();
+        serial_rx_mode();
         rx_rearm();
         s_last_rearm_tick = clock_time();
     }
@@ -104,9 +121,10 @@ void modbus_uart_process(void)
         s_last_rearm_tick = clock_time();
     }
 
+    /* Recover a malformed or partial frame without resetting UART configuration. */
     if (!s_rx_ready && !uart_tx_is_busy() && clock_time_exceed(s_last_rearm_tick, 1000000u)) {
         if (uart_is_parity_error()) uart_clear_parity_error();
-        rs485_rx_mode();
+        serial_rx_mode();
         rx_rearm();
         s_last_rearm_tick = clock_time();
     }
@@ -114,13 +132,9 @@ void modbus_uart_process(void)
 
 #else
 
-/* Transport stub: keeps the deterministic source list unchanged while a board
- * profile has no compatible physical RS485 transceiver. BLE Modbus uses the
- * same modbus_on_frame() parser and is unaffected.
- */
 void modbus_uart_init(void) { }
 void modbus_uart_irq_proc(void) { }
 void modbus_uart_process(void) { }
 void modbus_uart_send(const u8 *data, u32 len) { (void)data; (void)len; }
 
-#endif /* BMS_RS485_ENABLE */
+#endif /* BMS_SERIAL_ENABLE */

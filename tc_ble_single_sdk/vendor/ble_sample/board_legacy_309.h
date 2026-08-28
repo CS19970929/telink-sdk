@@ -47,11 +47,21 @@
 #define BMS_SH309_MOS_CONTROL_ENABLE    0u
 #endif
 
-/* The legacy PCB uses PA1 as MCC_C, not an RS485 DE pin. Keep the HS-D011
- * half-duplex RS485 driver disabled on this profile. BLE Modbus remains active.
+/* The proven legacy project uses a direct 115200 8N1 UART on PC2/PC3. PA1 is
+ * MCC_C on this PCB, so there is deliberately no RS485 direction pin here.
  */
-#define BMS_RS485_ENABLE                0u
+#define BMS_SERIAL_ENABLE               1u
+#define BMS_SERIAL_TX_PIN               UART_TX_PC2
+#define BMS_SERIAL_RX_PIN               UART_RX_PC3
+#define BMS_SERIAL_DE_ENABLE            0u
+#define BMS_SERIAL_BAUD                 115200u
 #define BMS_MODBUS_SLAVE_ADDR           0x01u
+
+/* Compatibility name consumed by the existing scheduler/project code. */
+#define BMS_RS485_ENABLE                BMS_SERIAL_ENABLE
+#define BMS_RS485_TX_PIN                BMS_SERIAL_TX_PIN
+#define BMS_RS485_RX_PIN                BMS_SERIAL_RX_PIN
+#define BMS_RS485_BAUD                  BMS_SERIAL_BAUD
 
 #define BMS_AFE_POLL_PERIOD_US          100000u
 

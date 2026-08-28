@@ -12,13 +12,21 @@
 #define BMS_AFE_RESET_PIN               GPIO_PC1
 #define BMS_AFE_ALARM_PIN               GPIO_PC0
 
-/* Isolated RS485 (CA-IS2092A). */
-#define BMS_RS485_ENABLE                1u
-#define BMS_RS485_TX_PIN                UART_TX_PC2
-#define BMS_RS485_RX_PIN                UART_RX_PC3
-#define BMS_RS485_EN_PIN                GPIO_PA1
-#define BMS_RS485_BAUD                  115200u
+/* Modbus UART transport through isolated half-duplex CA-IS2092A. */
+#define BMS_SERIAL_ENABLE               1u
+#define BMS_SERIAL_TX_PIN               UART_TX_PC2
+#define BMS_SERIAL_RX_PIN               UART_RX_PC3
+#define BMS_SERIAL_DE_ENABLE            1u
+#define BMS_SERIAL_DE_PIN               GPIO_PA1
+#define BMS_SERIAL_BAUD                 115200u
 #define BMS_MODBUS_SLAVE_ADDR           0x01u
+
+/* Compatibility aliases for code written before transport mode was split. */
+#define BMS_RS485_ENABLE                BMS_SERIAL_ENABLE
+#define BMS_RS485_TX_PIN                BMS_SERIAL_TX_PIN
+#define BMS_RS485_RX_PIN                BMS_SERIAL_RX_PIN
+#define BMS_RS485_EN_PIN                BMS_SERIAL_DE_PIN
+#define BMS_RS485_BAUD                  BMS_SERIAL_BAUD
 
 #define BMS_DI1_PIN                     GPIO_PA0
 #define BMS_INT_WAKE_MCU_PIN            GPIO_PB1
