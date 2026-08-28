@@ -8,6 +8,7 @@
 
 #define BMS_AFE_TYPE_UNKNOWN       0x0000u
 #define BMS_AFE_TYPE_SH3673510     0x3510u
+#define BMS_AFE_TYPE_SIMULATED     0xFFFFu
 
 #define BMS_AFE_FEAT_CELL_OV       BIT(0)
 #define BMS_AFE_FEAT_CELL_UV       BIT(1)
