@@ -6,7 +6,7 @@
  * @author  BLE Group
  * @date    2022
  *
- * @par     Copyright (c) 2022, Telink Semiconductor (Shanghai) Co., Ltd. ("TELINK")
+ * @par     Copyright (c) 2022 Telink Semiconductor (Shanghai) Co., Ltd. ("TELINK")
  *
  *          Licensed under the Apache License, Version 2.0 (the "License");
  *          you may not use this file except in compliance with the License.
@@ -128,4 +128,6 @@ SECTIONS
 		PROVIDE(_retention_size_ = _retention_use_size_div_16_ * 16);
 }
 ASSERT(_retention_size_ * __PM_DEEPSLEEP_RETENTION_ENABLE < 0x8000, "Error: Retention RAM size overflow.");
+/* This branch targets TLSR8251F512 only. Keep the startup/link contract explicit so an accidental MCU_STARTUP_8258 build cannot silently use a 64 KiB stack top. */
+ASSERT(__SRAM_SIZE == 0x848000, "Error: TLSR8251 startup SRAM profile mismatch.");
 ASSERT(_ram_use_end_<(__SRAM_SIZE - 600), "Error: RAM size maybe overflow.");/*600byte is the stack size used when secure connect is not enabled.*/
