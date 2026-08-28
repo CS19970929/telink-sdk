@@ -121,12 +121,16 @@ static u16 read_serial_pm_status(u16 off)
 {
     modbus_uart_pm_diag_t d;
     u16 flags;
+    u16 config_flags;
 
     modbus_uart_get_pm_diag(&d);
     flags = (u16)((d.active ? BIT(0) : 0u) |
                   (d.wake_armed ? BIT(1) : 0u) |
                   (d.wake_pending ? BIT(2) : 0u) |
                   (BMS_SERIAL_PM_ENABLE ? BIT(3) : 0u));
+    config_flags = (u16)((BMS_SERIAL_PM_USE_PAD_WAKE ? BIT(0) : 0u) |
+                         (BMS_SERIAL_PM_USE_RISC0_WAKE ? BIT(1) : 0u) |
+                         (BMS_SERIAL_PM_TX_SLEEP_HIZ ? BIT(2) : 0u));
 
     switch (off) {
     case 0: return BMS_SERIAL_PM_MAGIC;
@@ -137,6 +141,8 @@ static u16 read_serial_pm_status(u16 off)
     case 5: return (u16)(d.sleep_count >> 16);
     case 6: return (u16)d.wake_count;
     case 7: return (u16)(d.wake_count >> 16);
+    case 8: return (u16)BMS_SERIAL_PM_VARIANT;
+    case 9: return config_flags;
     default: return 0u;
     }
 }
