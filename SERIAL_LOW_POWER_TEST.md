@@ -1,108 +1,134 @@
 # Serial wake + 3-second idle low-power test
 
-## Policy
+## Stable runtime policy
 
-The serial transport intentionally does **not** guarantee that the first Modbus RTU request after sleep is preserved.
+The active UART path is the already bench-validated 115200 8N1 DMA implementation. Low-power logic is only allowed to touch the transport after the final UART activity has been idle for 3 seconds plus a 50 ms guard.
 
-Runtime policy:
+Normal/current behavior:
 
 1. UART/RS485 is `ACTIVE` after boot and after any serial wake.
-2. While `ACTIVE`, the UART/DMA flow is the same sequence already verified on the legacy SH367309 project, and BLE Suspend is vetoed.
+2. While `ACTIVE`, BLE suspend is vetoed so UART RX/TX DMA can communicate normally.
 3. Every UART RX/TX activity restarts a 3-second idle timer.
-4. After 3 seconds with no serial activity, plus a 50 ms quiet guard, and with no RX/TX work pending, UART/DMA is stopped once.
-5. PC3 is remuxed from UART RX to GPIO input, weakly pulled high, and armed for falling-edge RISC0 plus low-level PAD wake.
-6. BLE/BMS Suspend policy is restored. The existing BMS application wake deadline may still wake the MCU for AFE/protection work; this does not restore UART.
-7. A serial start bit on PC3 wakes the MCU. RISC0 detects activity while the CPU is already awake; PAD wake covers BLE Suspend/deep-sleep entry.
-8. The wake handler only posts a pending flag. UART/DMA are restored later in normal project-loop context using the known-good active initialization sequence.
-9. The wake frame may be lost. The next Modbus retry must communicate normally.
-10. Any restored UART activity starts a new 3-second active window; after the final activity the transport returns to low power again.
+4. After 3 seconds plus the quiet guard, with no RX/TX work pending, UART/DMA is stopped.
+5. PC3 is remuxed from UART RX to GPIO input.
+6. BLE/BMS suspend is restored.
+7. A serial start bit can wake the MCU according to the selected test variant.
+8. The wake frame may be lost; subsequent Modbus requests must communicate normally.
+
+The active UART/DMA flow is intentionally identical across all power-test variants. Only the sleep-side TX drive and serial wake mechanisms change.
 
 This is common to both current boards:
 
 - `legacy-309`: PC2 TX, PC3 RX, direct UART, no DE.
 - `hs-d011`: PC2 TX, PC3 RX/RO, PA1 DE; DE stays low while serial is sleep-armed.
 
-## Configuration
+## One-command firmware matrix
 
-Common defaults in `bms_board.h`:
+For the current TLSR8251 + SH367309 bench target:
 
-```c
-BMS_SERIAL_PM_ENABLE         = 1
-BMS_SERIAL_KEEP_AWAKE        = 1   // applies while ACTIVE
-BMS_SERIAL_IDLE_SLEEP_MS     = 3000
-BMS_SERIAL_SLEEP_GUARD_MS    = 50
-BMS_SERIAL_WAKE_LEVEL        = Level_Low
-BMS_SERIAL_RX_SLEEP_PULL     = PM_PIN_PULLUP_1M
+```powershell
+python bms_tools/serial_pm_matrix.py
 ```
 
-The board profile must provide both UART mux identities and GPIO identities:
+Equivalent explicit command:
 
-```c
-BMS_SERIAL_TX_PIN
-BMS_SERIAL_RX_PIN
-BMS_SERIAL_TX_GPIO
-BMS_SERIAL_RX_GPIO
+```powershell
+python bms_tools/serial_pm_matrix.py --board legacy-309 --afe sh367309 --jobs 1
 ```
 
-## PM arbitration
+The helper performs four clean rebuilds, runs the normal Telink post-check for each build, and writes named test firmware under:
 
-`blt_pm_proc()` runs before `bms_project_process()` in the current main loop. The serial layer therefore owns the final PM decision for the next LinkLayer iteration:
+```text
+tc_ble_single_sdk/project/tlsr_tc32/B85/825x_ble_sample_cli/serial_pm_matrix/legacy-309_sh367309/
+```
 
-- `ACTIVE`: force `SUSPEND_DISABLE`, and refresh the BLE sample's advertising/connection inactivity timers so its 60-second deep-sleep policy cannot interrupt an active UART session.
-- `WAKE_ARMED`: do not veto BLE PM; the normal application mask is restored and PC3 remains armed as a wake source.
+It builds the `CURRENT` variant last, so the usual canonical `825x_ble_sample.bin` is left on the normal bench-validated configuration after the command finishes.
 
-The serial suspend-enter callback wraps the original `task_sleep_enter()` and adds `PM_WAKEUP_PAD` while `WAKE_ARMED`. GPIO early wake and RISC0 only post `wake_pending`; UART/DMA restoration is not performed in interrupt/callback context.
+## A/B variants
+
+| File | Variant ID | PAD wake | RISC0 | TX while asleep | Expected serial wake | Purpose |
+| --- | ---: | --- | --- | --- | --- | --- |
+| `A_current-dual-txhigh.bin` | 0 | yes | yes | driven HIGH | yes | Exact current implementation; reproduces the present ~1 mA result |
+| `B_dual-hiz.bin` | 1 | yes | yes | high-Z | yes | Isolates any cost caused by holding TX HIGH |
+| `C_pad-hiz.bin` | 2 | yes | no | high-Z | yes | Preferred candidate if RISC0 is responsible for excess current |
+| `D_no-wake-hiz.bin` | 3 | no | no | high-Z | **no** | Power reference: isolates the cost of serial wake circuitry itself |
+
+`D_no-wake-hiz.bin` is intentionally not a usable final communication firmware: after UART has been idle for 3 seconds and enters serial sleep, UART traffic cannot wake it. Use it only to measure the low-power floor, then power-cycle/reflash.
+
+## Compile-time selection
+
+Normal builds still default to variant 0, so the ordinary command remains unchanged:
+
+```powershell
+python bms_tools/bms.py rebuild --board legacy-309 --afe sh367309 --jobs 1
+```
+
+The matrix helper sets `BMS_SERIAL_PM_VARIANT` for each clean build:
+
+```text
+0 = CURRENT: RISC0 + PAD, TX HIGH
+1 = DUAL_HIZ: RISC0 + PAD, TX high-Z
+2 = PAD_HIZ: PAD only, TX high-Z
+3 = NOWAKE_HIZ: no serial wake, TX high-Z
+```
 
 ## Diagnostic registers
 
-A read-only Modbus block is available at `0xD140`:
+The read-only serial PM block is at `0xD140`.
 
 | Register | Meaning |
 | --- | --- |
 | `D140` | magic `0x5350` (`SP`) |
-| `D141` | version `0x0001` |
-| `D142` | flags: bit0 ACTIVE, bit1 WAKE_ARMED, bit2 WAKE_PENDING, bit3 PM enabled |
-| `D143` | idle timeout in ms (default 3000) |
+| `D141` | version `0x0002` |
+| `D142` | state flags: bit0 ACTIVE, bit1 WAKE_ARMED, bit2 WAKE_PENDING, bit3 PM enabled |
+| `D143` | idle timeout in ms (`3000`) |
 | `D144` | sleep_count low word |
 | `D145` | sleep_count high word |
 | `D146` | wake_count low word |
 | `D147` | wake_count high word |
+| `D148` | compiled PM variant ID: 0/1/2/3 |
+| `D149` | config flags: bit0 PAD wake, bit1 RISC0 wake, bit2 TX high-Z |
 
-Use **BLE Modbus** to observe `D140..D147` while testing serial sleep. Polling this block over UART itself counts as serial activity and keeps the serial transport ACTIVE.
+Use BLE Modbus to read this block while measuring serial sleep. Polling it over UART itself refreshes the serial activity timer.
 
-## Bench procedure for TLSR8251 + SH367309
+Expected `D148/D149` pairs:
 
-Build the real 309 profile:
+| Variant | D148 | D149 |
+| --- | ---: | ---: |
+| A current | `0x0000` | `0x0003` |
+| B dual-hiz | `0x0001` | `0x0007` |
+| C pad-hiz | `0x0002` | `0x0005` |
+| D no-wake-hiz | `0x0003` | `0x0004` |
 
-```powershell
-python bms_tools/bms.py rebuild --board legacy-309 --afe sh367309 --jobs 4
-python bms_tools/bms.py verify
-```
+## Measurement procedure
 
-Then flash the canonical `825x_ble_sample.bin`.
+Keep the electrical setup identical for all four firmware images. Previous bench testing already showed that physically disconnecting the UART cable does not change the approximately 1 mA result, so the matrix is aimed at internal sleep/wake behavior rather than external backfeed.
 
-Test sequence:
+For each image:
 
-1. Immediately after boot, read `D140..D147` through BLE. `D142.bit0` should be 1 (`ACTIVE`).
-2. Poll UART at 200-500 ms for several minutes. Communication must remain stable and `sleep_count` must not increase.
-3. Stop all UART requests. After about 3.05 seconds, observe through BLE that `D142.bit1` becomes 1 and `sleep_count` increments once. Current consumption should return to the normal BLE/BMS low-power regime.
-4. Wait 10 seconds, then send one UART Modbus request. It is allowed to time out because it is the wake frame.
-5. Retry the UART request. The following request must receive a normal Modbus response.
-6. Read `D140..D147` through BLE: `wake_count` must have incremented and `D142.bit0` should be 1 during the new active window.
-7. Continue UART polling at intervals shorter than 3 seconds; the link must remain active and responsive without additional sleep transitions.
-8. Stop UART polling again for more than 3 seconds. `sleep_count` must increment again and low-power current must return.
-9. Repeat the same sequence after 60 seconds of serial inactivity. A request must still wake the MCU; if the BLE sample has progressed to full deep sleep, the wake may reboot the application and the following request must work after normal startup.
-10. Repeat wake/sleep cycles at least 100 times before considering the behavior bench-validated; use 1000 cycles for release qualification.
+1. Flash the named BIN.
+2. Confirm normal boot and, for A/B/C, normal continuous UART communication.
+3. Stop UART traffic for at least 5 seconds.
+4. Measure steady low-power current, not the short transition peak.
+5. Read `D148/D149` over BLE to confirm the flashed variant if needed.
+6. For A/B/C, send UART traffic after sleep. The first request may be lost; retries must restore stable communication.
+7. Record the low-power current and whether serial wake/recovery works.
 
-If BLE is not available during a UART-only bench test, infer the transition from current consumption and then read the counters after UART has been woken; do not continuously read `D140..D147` over UART while trying to prove the 3-second idle transition.
+Recommended result table:
 
-## Acceptance
+| Variant | Low-power current | Serial wake | Continuous communication after wake |
+| --- | ---: | --- | --- |
+| A current-dual-txhigh |  |  |  |
+| B dual-hiz |  |  |  |
+| C pad-hiz |  |  |  |
+| D no-wake-hiz |  | N/A by design | N/A |
 
-- UART/RS485 communication is stable while `ACTIVE`.
-- Continuous UART activity cannot be interrupted by the BLE sample's Suspend or 60-second deep-sleep timeout.
-- No serial activity for 3 seconds plus the 50 ms quiet guard returns the transport to `WAKE_ARMED`.
-- TX is never suspended mid-frame.
-- The first request after sleep may be lost; the following retry works.
-- BMS AFE/protection scheduling continues while serial is `WAKE_ARMED`.
-- BLE scan/connect/communication remains functional after repeated serial wake/sleep cycles.
-- HS-D011 must additionally verify DE=0 while `WAKE_ARMED` when target hardware is available.
+## Interpretation
+
+- If A and B are essentially equal, TX driven HIGH is not the cause.
+- If B is high but C falls back near the old `<500 uA` level, RISC0/falling-edge GPIO interrupt is the main extra load.
+- If C is still high but D returns near `<500 uA`, PAD serial wake or its interaction with BLE suspend is the main extra load.
+- If D is still around 1 mA, the increase is not caused by the serial wake mechanisms and the next comparison should move to the broader BLE/BMS suspend policy.
+- If C gives low power and reliable wake, `PAD only + TX high-Z` is the preferred final policy.
+
+Do not change the already validated ACTIVE UART/DMA path while running this matrix. The purpose of the test is to isolate sleep-side power cost only.
