@@ -12,10 +12,14 @@
 #define BMS_AFE_RESET_PIN               GPIO_PC1
 #define BMS_AFE_ALARM_PIN               GPIO_PC0
 
-/* Modbus UART transport through isolated half-duplex CA-IS2092A. */
+/* Modbus UART transport through isolated half-duplex CA-IS2092A. PC3/RO idles
+ * high, so it can become a low-level wake pad while the UART is suspended.
+ */
 #define BMS_SERIAL_ENABLE               1u
 #define BMS_SERIAL_TX_PIN               UART_TX_PC2
 #define BMS_SERIAL_RX_PIN               UART_RX_PC3
+#define BMS_SERIAL_TX_GPIO              GPIO_PC2
+#define BMS_SERIAL_RX_GPIO              GPIO_PC3
 #define BMS_SERIAL_DE_ENABLE            1u
 #define BMS_SERIAL_DE_PIN               GPIO_PA1
 #define BMS_SERIAL_BAUD                 115200u
