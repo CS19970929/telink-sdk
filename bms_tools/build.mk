@@ -1,7 +1,8 @@
-# HS-D011 TLSR8251 command-line build driver.
+# TLSR8251 BMS command-line build driver.
 #
 # This keeps the existing Telink Eclipse 825x_ble_sample C ABI/link contract,
-# while selecting the startup SRAM profile for the actual TLSR8251 device.
+# while selecting the startup SRAM profile for the actual TLSR8251 device and
+# forwarding the board/AFE profile selected by bms_tools/bms.py.
 
 REPO_ROOT ?= .
 SDK_DIR ?= tc_ble_single_sdk
@@ -9,9 +10,15 @@ PROJ_DIR := $(SDK_DIR)/project/tlsr_tc32/B85
 PROJ_LIB_DIR := $(SDK_DIR)/proj_lib
 LINKER_FILE := $(PROJ_DIR)/boot.link
 
-BUILD_DIR ?= $(PROJ_DIR)/825x_ble_sample_cli
+BUILD_DIR ?= $(PROJ_DIR)/825x_ble_sample_cli/legacy-309_sh367309
 OBJ_DIR := $(BUILD_DIR)/obj
 GEN_DIR := $(BUILD_DIR)/gen
+
+# Defaults intentionally match bms_board.h and bms.py. bms.py passes these
+# explicitly for every profile-aware build, so changing AFE/board never depends
+# on editing a C header by hand.
+BMS_BOARD_PROFILE ?= 2
+BMS_AFE_MODEL ?= 1
 
 CC := tc32-elf-gcc
 LD := tc32-elf-ld
@@ -36,7 +43,9 @@ INCLUDES := \
 # CHIP_TYPE_825x remains the correct B85-family compile target.
 DEFINES := \
 	-D__PROJECT_8258_BLE_SAMPLE__=1 \
-	-DCHIP_TYPE=CHIP_TYPE_825x
+	-DCHIP_TYPE=CHIP_TYPE_825x \
+	-DBMS_BOARD_PROFILE=$(BMS_BOARD_PROFILE) \
+	-DBMS_AFE_MODEL=$(BMS_AFE_MODEL)
 
 # Exact compiler-side options used by the existing 825x_ble_sample config.
 CFLAGS_BASE := \
@@ -45,13 +54,12 @@ CFLAGS_BASE := \
 	-fpack-struct -fshort-enums -finline-small-functions \
 	-std=gnu99 -fshort-wchar -fms-extensions
 
-# HS-D011 is populated with TLSR8251F512. In cstartup_825x.S the startup macro
-# is the SRAM-end selector:
+# Both current BMS profiles use TLSR8251F512. In cstartup_825x.S the startup
+# macro is the SRAM-end selector:
 #   8251 -> 0x840000 + 32 KiB = 0x848000
 #   8253 -> 0x840000 + 48 KiB = 0x84C000
 #   8258 -> 0x840000 + 64 KiB = 0x850000
-# The old Eclipse profile used MCU_STARTUP_8258, which placed the main stack at
-# 0x850000. That is outside TLSR8251's 32 KiB SRAM. Use the actual 8251 profile.
+# Never select MCU_STARTUP_8258 for this target.
 AFLAGS_BASE := -DMCU_STARTUP_8251
 
 CFLAGS := $(CFLAGS_BASE) $(INCLUDES) $(DEFINES)
