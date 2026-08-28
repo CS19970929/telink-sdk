@@ -130,4 +130,5 @@ SECTIONS
 ASSERT(_retention_size_ * __PM_DEEPSLEEP_RETENTION_ENABLE < 0x8000, "Error: Retention RAM size overflow.");
 /* This branch targets TLSR8251F512 only. Keep the startup/link contract explicit so an accidental MCU_STARTUP_8258 build cannot silently use a 64 KiB stack top. */
 ASSERT(__SRAM_SIZE == 0x848000, "Error: TLSR8251 startup SRAM profile mismatch.");
-ASSERT(_ram_use_end_<(__SRAM_SIZE - 600), "Error: RAM size maybe overflow.");/*600byte is the stack size used when secure connect is not enabled.*/
+PROVIDE(_bms_main_stack_guard_ = 600);
+ASSERT(_ram_use_end_<(__SRAM_SIZE - _bms_main_stack_guard_), "Error: RAM size maybe overflow.");/*600byte is the stack size used when secure connect is not enabled.*/
