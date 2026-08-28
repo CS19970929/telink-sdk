@@ -2,9 +2,9 @@
 
 PYTHON ?= python
 JOBS ?= 4
-BOARD ?= legacy-309
-AFE ?= sh367309
-PROFILE_ARGS := --board $(BOARD) --afe $(AFE)
+BOARD ?=
+AFE ?=
+PROFILE_ARGS := $(if $(strip $(BOARD)),--board $(BOARD),) $(if $(strip $(AFE)),--afe $(AFE),)
 
 profiles:
 	$(PYTHON) bms_tools/bms.py profiles
