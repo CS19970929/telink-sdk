@@ -1,5 +1,4 @@
 #include "btname_modbus.h"
-#include <string.h>
 
 static char s_name[BTNAME_TOTAL_MAX_LEN] = "BT_HSD011_10S50A";
 static void (*s_refresh_cb)(void) = 0;
@@ -37,9 +36,13 @@ int btname_modbus_on_write_holding(u16 addr, u16 qty, const u16 *regs)
     }
     s_name[BTNAME_TOTAL_MAX_LEN - 1u] = '\0';
 
-    /* Keep the established BT_ namespace used by the existing tools/apps. */
-    if (strncmp(s_name, BTNAME_PREFIX, 3) != 0) {
-        s_name[0] = 'B'; s_name[1] = 'T'; s_name[2] = '_';
+    /* The SDK's minimal common/string.c does not provide strncmp(). Keep this
+     * small prefix check local instead of pulling in a host libc dependency.
+     */
+    if (s_name[0] != 'B' || s_name[1] != 'T' || s_name[2] != '_') {
+        s_name[0] = 'B';
+        s_name[1] = 'T';
+        s_name[2] = '_';
     }
     if (s_refresh_cb) s_refresh_cb();
     return 1;
