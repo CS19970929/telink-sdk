@@ -9,7 +9,7 @@ public static class TelinkOtaProtocol
     public const ushort CommandResult = 0xFF06;
     public const int DataBytesPerPdu = 16;
 
-    public static byte[] BuildLegacyStart() => [0x01, 0xFF];
+    public static byte[] BuildLegacyStart() => new byte[] { 0x01, 0xFF };
 
     public static IReadOnlyList<byte[]> BuildLegacyDataPackets(ReadOnlySpan<byte> firmware)
     {
@@ -36,12 +36,12 @@ public static class TelinkOtaProtocol
     public static byte[] BuildEnd(ushort lastAddressIndex)
     {
         var inverse = (ushort)(lastAddressIndex ^ 0xFFFF);
-        return
-        [
+        return new byte[]
+        {
             0x02, 0xFF,
             (byte)lastAddressIndex, (byte)(lastAddressIndex >> 8),
             (byte)inverse, (byte)(inverse >> 8),
-        ];
+        };
     }
 
     public static int ResolveFirmwareLength(ReadOnlySpan<byte> bin)
