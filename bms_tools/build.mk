@@ -24,8 +24,6 @@ BMS_AFE_MODEL ?= 1
 # BMS_BUILD_DATE is numeric on purpose: the C source stringifies it, avoiding
 # fragile quote escaping across Windows GNU Make/cmd and TC32 GCC.
 # Examples shown in the build log: SH367309-20260828, SH3673510-20260828.
-# Use rebuild for release/test images so a new build day cannot reuse an older
-# object that still contains yesterday's identity string.
 PYTHON ?= python
 BMS_BUILD_DATE ?= $(shell $(PYTHON) -c "from datetime import date; print(date.today().strftime('%Y%m%d'))")
 ifeq ($(BMS_AFE_MODEL),0)
@@ -90,7 +88,12 @@ LIBS := -llt_825x -llt_general_stack
 
 -include $(BUILD_DIR)/sources.mk
 
-.PHONY: all size identity
+# The production serial contains the build date, so modbus_rtu.o must not be
+# silently reused by an incremental build on a later day. Force only this one
+# small translation unit to rebuild; all other objects remain incremental.
+.PHONY: all size identity FORCE_BUILD_IDENTITY
+FORCE_BUILD_IDENTITY:
+$(OBJ_DIR)/vendor/ble_sample/modbus_rtu.o: FORCE_BUILD_IDENTITY
 
 all: identity $(ELF) $(RAW_BIN) $(LST) size
 
