@@ -1,6 +1,6 @@
 #include "btname_modbus.h"
 
-static char s_name[BTNAME_TOTAL_MAX_LEN] = "BT_HSD011_10S50A";
+static char s_name[BTNAME_TOTAL_MAX_LEN] = "BT_d011_default";
 static void (*s_refresh_cb)(void) = 0;
 
 void btname_set_refresh_callback(void (*cb)(void))
