@@ -14,11 +14,13 @@ BUILD_DIR ?= $(PROJ_DIR)/825x_ble_sample_cli/legacy-309_sh367309
 OBJ_DIR := $(BUILD_DIR)/obj
 GEN_DIR := $(BUILD_DIR)/gen
 
-# Defaults intentionally match bms_board.h and bms.py. bms.py passes these
-# explicitly for every profile-aware build, so changing AFE/board never depends
-# on editing a C header by hand.
+# Defaults intentionally match bms_board.h and bms.py. bms.py passes board/AFE
+# explicitly. BMS_SERIAL_PM_VARIANT is normally left at 0; the serial PM matrix
+# helper overrides it through the environment and performs a clean rebuild per
+# variant so no object can be reused with different PM defines.
 BMS_BOARD_PROFILE ?= 2
 BMS_AFE_MODEL ?= 1
+BMS_SERIAL_PM_VARIANT ?= 0
 
 # Production identity follows the selected AFE and the local build date.
 # BMS_BUILD_DATE is numeric on purpose: the C source stringifies it, avoiding
@@ -63,6 +65,7 @@ DEFINES := \
 	-DCHIP_TYPE=CHIP_TYPE_825x \
 	-DBMS_BOARD_PROFILE=$(BMS_BOARD_PROFILE) \
 	-DBMS_AFE_MODEL=$(BMS_AFE_MODEL) \
+	-DBMS_SERIAL_PM_VARIANT=$(BMS_SERIAL_PM_VARIANT) \
 	-DBMS_BUILD_DATE=$(BMS_BUILD_DATE)
 
 # Exact compiler-side options used by the existing 825x_ble_sample config.
@@ -99,6 +102,7 @@ all: identity $(ELF) $(RAW_BIN) $(LST) size
 
 identity:
 	@echo Build serial: $(BMS_BUILD_SERIAL)
+	@echo Serial PM variant: $(BMS_SERIAL_PM_VARIANT)
 
 $(ELF): $(OBJS)
 	@echo Linking: $@
