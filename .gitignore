@@ -1,6 +1,11 @@
 # Command-line TC32 build artifacts
 tc_ble_single_sdk/project/tlsr_tc32/B85/825x_ble_sample_cli/
 
+# Windows host build/publish artifacts
+host_tools/windows/**/bin/
+host_tools/windows/**/obj/
+host_tools/windows/publish/
+
 # Python cache
 __pycache__/
 *.pyc
