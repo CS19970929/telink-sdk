@@ -17,11 +17,12 @@
 
 /* Serial low-power diagnostics. This is a new read-only window and does not
  * overlap the existing D120 realtime or D130 protection status blocks.
+ * D148/D149 identify the exact compile-time PM A/B-test firmware.
  */
 #define BMS_SERIAL_PM_REG_BASE         0xD140u
-#define BMS_SERIAL_PM_REG_COUNT        8u
+#define BMS_SERIAL_PM_REG_COUNT        10u
 #define BMS_SERIAL_PM_MAGIC            0x5350u /* 'SP' */
-#define BMS_SERIAL_PM_VERSION          0x0001u
+#define BMS_SERIAL_PM_VERSION          0x0002u
 
 #define PROD_SN_REG_BASE               0xC002u
 #define PROD_SN_REG_COUNT              16u
