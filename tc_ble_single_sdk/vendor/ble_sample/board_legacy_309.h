@@ -54,10 +54,14 @@
 
 /* The proven legacy project uses a direct 115200 8N1 UART on PC2/PC3. PA1 is
  * MCC_C on this PCB, so there is deliberately no RS485 direction pin here.
+ * Keep GPIO identities beside the UART mux identities so PC3 can temporarily
+ * become a low-level wake pad after the serial link has been idle for 3 s.
  */
 #define BMS_SERIAL_ENABLE               1u
 #define BMS_SERIAL_TX_PIN               UART_TX_PC2
 #define BMS_SERIAL_RX_PIN               UART_RX_PC3
+#define BMS_SERIAL_TX_GPIO              GPIO_PC2
+#define BMS_SERIAL_RX_GPIO              GPIO_PC3
 #define BMS_SERIAL_DE_ENABLE            0u
 #define BMS_SERIAL_BAUD                 115200u
 #define BMS_MODBUS_SLAVE_ADDR           0x01u
