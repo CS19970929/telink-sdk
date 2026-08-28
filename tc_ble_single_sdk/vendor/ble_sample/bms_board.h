@@ -88,6 +88,14 @@
 #define BMS_SERIAL_PM_ENABLE            0u
 #endif
 
+/* Legacy Modbus diagnostics still expose the former idle-sleep timeout register.
+ * Serial-only mode has no idle-to-GPIO transition, so the meaningful value is 0.
+ * Keep the symbol for protocol/build compatibility without restoring PM behavior.
+ */
+#ifndef BMS_SERIAL_IDLE_SLEEP_MS
+#define BMS_SERIAL_IDLE_SLEEP_MS        0u
+#endif
+
 /* The production SOC estimator is not integrated yet. A zero/uninitialized SOC
  * must therefore never close the discharge MOS. Enable this only when SOC has
  * a validity model and real coulomb/OCV estimation behind it.
