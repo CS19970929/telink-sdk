@@ -63,6 +63,31 @@
 #define BMS_PROTECT_OPPOSITE_REOPEN_ENABLE 1u
 #endif
 
+/* Serial low-power policy: while serial is active, BLE suspend is vetoed so
+ * UART/DMA can communicate normally. After 3 seconds without serial activity,
+ * UART RX is released and the physical RX pin becomes a low-level wake pad.
+ * The wake frame may be lost by design; the next Modbus request is processed
+ * after UART/DMA are restored. This policy is common to direct UART and RS485.
+ */
+#ifndef BMS_SERIAL_PM_ENABLE
+#define BMS_SERIAL_PM_ENABLE            1u
+#endif
+#ifndef BMS_SERIAL_IDLE_SLEEP_MS
+#define BMS_SERIAL_IDLE_SLEEP_MS        3000u
+#endif
+#ifndef BMS_SERIAL_WAKE_LEVEL
+#define BMS_SERIAL_WAKE_LEVEL           Level_Low
+#endif
+
+#if BMS_SERIAL_ENABLE && BMS_SERIAL_PM_ENABLE
+#ifndef BMS_SERIAL_TX_GPIO
+#error "BMS_SERIAL_TX_GPIO is required when serial low-power is enabled"
+#endif
+#ifndef BMS_SERIAL_RX_GPIO
+#error "BMS_SERIAL_RX_GPIO is required when serial low-power is enabled"
+#endif
+#endif
+
 /* The production SOC estimator is not integrated yet. A zero/uninitialized SOC
  * must therefore never close the discharge MOS. Enable this only when SOC has
  * a validity model and real coulomb/OCV estimation behind it.
