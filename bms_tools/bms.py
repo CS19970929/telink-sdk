@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""HS-D011 / TLSR8251 command-line build entry point.
+"""TLSR8251 multi-board/multi-AFE command-line build entry point.
 
-The build keeps the repository's Telink 825x_ble_sample C ABI/link contract,
-but uses the startup SRAM profile for the actual TLSR8251 device. It does not
-depend on opening Telink IDE or on IDE-generated makefiles.
+The build keeps the Telink 825x_ble_sample C ABI/link contract while selecting
+both the physical BMS board profile and the AFE backend at compile time. It does
+not depend on opening Telink IDE or on IDE-generated makefiles.
 
 Typical use:
-    python bms_tools/bms.py env
-    python bms_tools/bms.py sources --check
-    python bms_tools/bms.py rebuild --jobs 4
+    python bms_tools/bms.py profiles
+    python bms_tools/bms.py env --board legacy-309 --afe sh367309
+    python bms_tools/bms.py rebuild --board legacy-309 --afe sh367309 --jobs 4
+    python bms_tools/bms.py verify
 """
 
 from __future__ import annotations
@@ -30,18 +31,13 @@ SDK_DIR = REPO_ROOT / "tc_ble_single_sdk"
 PROJ_DIR = SDK_DIR / "project" / "tlsr_tc32" / "B85"
 LINKER_FILE = PROJ_DIR / "boot.link"
 PROJ_LIB_DIR = SDK_DIR / "proj_lib"
-BUILD_DIR = PROJ_DIR / "825x_ble_sample_cli"
-OBJ_DIR = BUILD_DIR / "obj"
-GEN_DIR = BUILD_DIR / "gen"
-ELF = BUILD_DIR / "825x_ble_sample.elf"
-RAW_BIN = BUILD_DIR / "825x_ble_sample.raw.bin"
-BIN = BUILD_DIR / "825x_ble_sample.bin"
-LST = GEN_DIR / "825x_ble_sample.lst"
-MAP = GEN_DIR / "825x_ble_sample.map"
-MANIFEST = BUILD_DIR / "fw_manifest.json"
+BUILD_ROOT = PROJ_DIR / "825x_ble_sample_cli"
 SOURCE_ORDER_FILE = HERE / "source_order.txt"
 BUILD_MK = HERE / "build.mk"
 STARTUP_FILE = SDK_DIR / "boot" / "B85" / "cstartup_825x.S"
+LAST_PROFILE_FILE = BUILD_ROOT / "last_profile.json"
+CANONICAL_BIN = BUILD_ROOT / "825x_ble_sample.bin"
+CANONICAL_MANIFEST = BUILD_ROOT / "fw_manifest.json"
 
 TL_CHECK_DIR = SDK_DIR / "script" / "tl_check_fw"
 TL_CHECK_WIN = TL_CHECK_DIR / "tl_check_fw2.exe"
@@ -77,6 +73,55 @@ SRAM_BYTES = 0x8000
 SRAM_END = SRAM_BASE + SRAM_BYTES
 MAIN_STACK_GUARD_BYTES = 600
 
+# Numeric values intentionally match vendor/ble_sample/bms_board.h.
+BOARD_PROFILES = {
+    "hs-d011": {
+        "define": 1,
+        "label": "HS-D011-10S50A-V1",
+        "default_afe": "sh3673510",
+        "afes": ("mock", "sh3673510"),
+    },
+    "legacy-309": {
+        "define": 2,
+        "label": "TLSR8251-SH367309-LEGACY",
+        "default_afe": "sh367309",
+        "afes": ("mock", "sh367309"),
+    },
+}
+
+AFE_MODELS = {
+    "mock": {"define": 0, "mode": "SIMULATED"},
+    "sh367309": {"define": 1, "mode": "REAL"},
+    "sh3673510": {"define": 2, "mode": "REAL"},
+}
+
+BOARD_ALIASES = {
+    "d011": "hs-d011",
+    "hsd011": "hs-d011",
+    "309": "legacy-309",
+    "legacy309": "legacy-309",
+}
+AFE_ALIASES = {
+    "sim": "mock",
+    "simulation": "mock",
+    "309": "sh367309",
+    "3510": "sh3673510",
+}
+DEFAULT_BOARD = "legacy-309"
+
+# Active artifact paths are configured after resolving a profile. Keeping each
+# profile in a separate object directory prevents stale objects when CFLAGS
+# change between AFE selections.
+BUILD_DIR = BUILD_ROOT
+OBJ_DIR = BUILD_DIR / "obj"
+GEN_DIR = BUILD_DIR / "gen"
+ELF = BUILD_DIR / "825x_ble_sample.elf"
+RAW_BIN = BUILD_DIR / "825x_ble_sample.raw.bin"
+BIN = BUILD_DIR / "825x_ble_sample.bin"
+LST = GEN_DIR / "825x_ble_sample.lst"
+MAP = GEN_DIR / "825x_ble_sample.map"
+MANIFEST = BUILD_DIR / "fw_manifest.json"
+
 
 def info(msg: str) -> None:
     print(f"[bms] {msg}")
@@ -97,6 +142,98 @@ def sha256(path: Path) -> str:
 
 def rel(path: Path) -> str:
     return path.relative_to(REPO_ROOT).as_posix()
+
+
+def normalize_board(value: str) -> str:
+    key = value.strip().lower()
+    key = BOARD_ALIASES.get(key, key)
+    if key not in BOARD_PROFILES:
+        die(f"unknown board '{value}'. Run: python bms_tools/bms.py profiles")
+    return key
+
+
+def normalize_afe(value: str) -> str:
+    key = value.strip().lower()
+    key = AFE_ALIASES.get(key, key)
+    if key not in AFE_MODELS:
+        die(f"unknown AFE '{value}'. Run: python bms_tools/bms.py profiles")
+    return key
+
+
+def make_profile(board: str, afe: str | None = None) -> dict[str, object]:
+    board = normalize_board(board)
+    board_cfg = BOARD_PROFILES[board]
+    afe = normalize_afe(afe or str(board_cfg["default_afe"]))
+    allowed = tuple(board_cfg["afes"])
+    if afe not in allowed:
+        die(
+            f"invalid board/AFE combination: {board} + {afe}; "
+            f"allowed AFEs for {board}: {', '.join(allowed)}"
+        )
+    afe_cfg = AFE_MODELS[afe]
+    return {
+        "board": board,
+        "board_define": int(board_cfg["define"]),
+        "board_label": str(board_cfg["label"]),
+        "afe": afe,
+        "afe_define": int(afe_cfg["define"]),
+        "afe_mode": str(afe_cfg["mode"]),
+        "slug": f"{board}_{afe}",
+    }
+
+
+def resolve_profile(args: argparse.Namespace, prefer_last: bool = False) -> dict[str, object]:
+    board_arg = getattr(args, "board", None)
+    afe_arg = getattr(args, "afe", None)
+
+    if board_arg is None and afe_arg is None and prefer_last:
+        last = load_last_profile()
+        if last is not None:
+            return last
+
+    board = normalize_board(board_arg) if board_arg is not None else DEFAULT_BOARD
+    return make_profile(board, afe_arg)
+
+
+def configure_artifact_paths(profile: dict[str, object]) -> None:
+    global BUILD_DIR, OBJ_DIR, GEN_DIR, ELF, RAW_BIN, BIN, LST, MAP, MANIFEST
+    BUILD_DIR = BUILD_ROOT / str(profile["slug"])
+    OBJ_DIR = BUILD_DIR / "obj"
+    GEN_DIR = BUILD_DIR / "gen"
+    ELF = BUILD_DIR / "825x_ble_sample.elf"
+    RAW_BIN = BUILD_DIR / "825x_ble_sample.raw.bin"
+    BIN = BUILD_DIR / "825x_ble_sample.bin"
+    LST = GEN_DIR / "825x_ble_sample.lst"
+    MAP = GEN_DIR / "825x_ble_sample.map"
+    MANIFEST = BUILD_DIR / "fw_manifest.json"
+
+
+def load_last_profile() -> dict[str, object] | None:
+    if not LAST_PROFILE_FILE.exists():
+        return None
+    try:
+        data = json.loads(LAST_PROFILE_FILE.read_text(encoding="utf-8"))
+        return make_profile(str(data["board"]), str(data["afe"]))
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def write_last_profile(profile: dict[str, object]) -> None:
+    BUILD_ROOT.mkdir(parents=True, exist_ok=True)
+    data = {
+        "board": profile["board"],
+        "afe": profile["afe"],
+        "afe_mode": profile["afe_mode"],
+        "build_dir": rel(BUILD_DIR),
+    }
+    LAST_PROFILE_FILE.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+
+def print_profile(profile: dict[str, object], prefix: str = "") -> None:
+    print(f"{prefix}target MCU : {TARGET_MCU}")
+    print(f"{prefix}board      : {profile['board']} ({profile['board_label']})")
+    print(f"{prefix}AFE        : {profile['afe']}")
+    print(f"{prefix}AFE mode   : {profile['afe_mode']}")
 
 
 def command_version(command: list[str]) -> str:
@@ -174,6 +311,10 @@ def validate_target_contract() -> None:
         die("build.mk is not selecting MCU_STARTUP_8251")
     if "AFLAGS_BASE := -DMCU_STARTUP_8258" in build_text:
         die("build.mk still contains an active MCU_STARTUP_8258 startup selection")
+    if "-DBMS_BOARD_PROFILE=$(BMS_BOARD_PROFILE)" not in build_text:
+        die("build.mk does not forward BMS_BOARD_PROFILE to the compiler")
+    if "-DBMS_AFE_MODEL=$(BMS_AFE_MODEL)" not in build_text:
+        die("build.mk does not forward BMS_AFE_MODEL to the compiler")
 
     required_startup_fragments = (
         "#elif (MCU_STARTUP_8251)",
@@ -240,8 +381,8 @@ def validate_source_order(verbose: bool = True) -> list[str]:
 def write_source_order() -> None:
     sources = discover_sources()
     header = (
-        "# HS-D011 TLSR8251 authoritative source/link order.\n"
-        "# Keep this file under review: object order affects the final Telink image.\n"
+        "# TLSR8251 BMS authoritative source/link order.\n"
+        "# Board/AFE selection is compile-time; object order remains deterministic.\n"
         "# Update explicitly with: python bms_tools/bms.py sources --update\n"
     )
     SOURCE_ORDER_FILE.write_text(header + "\n".join(sources) + "\n", encoding="utf-8")
@@ -280,13 +421,12 @@ def generate_sources_mk(order: list[str]) -> None:
     (BUILD_DIR / "sources.mk").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def run_make(jobs: int) -> None:
+def run_make(jobs: int, profile: dict[str, object]) -> None:
     validate_target_contract()
     order = validate_source_order()
     generate_sources_mk(order)
     env = toolchain_env()
 
-    # Resolve these up front so failure is immediate and diagnostic.
     for tool in ("tc32-elf-gcc", "tc32-elf-ld", "tc32-elf-objcopy", "tc32-elf-objdump", "tc32-elf-size"):
         find_tool(tool, env)
 
@@ -299,19 +439,20 @@ def run_make(jobs: int) -> None:
         str(max(1, jobs)),
         "REPO_ROOT=.",
         "SDK_DIR=tc_ble_single_sdk",
-        "BUILD_DIR=tc_ble_single_sdk/project/tlsr_tc32/B85/825x_ble_sample_cli",
+        f"BUILD_DIR={rel(BUILD_DIR)}",
+        f"BMS_BOARD_PROFILE={profile['board_define']}",
+        f"BMS_AFE_MODEL={profile['afe_define']}",
         "all",
     ]
     info(f"starting TC32 build without Telink IDE ({TARGET_MCU}, {STARTUP_PROFILE})")
+    info(f"board={profile['board']}  afe={profile['afe']}  mode={profile['afe_mode']}")
     result = subprocess.run(cmd, cwd=REPO_ROOT, env=env, check=False)
     if result.returncode != 0:
         die(f"build failed, make exit code={result.returncode}", result.returncode)
 
 
 def firmware_checker() -> Path:
-    if os.name == "nt":
-        return TL_CHECK_WIN
-    return TL_CHECK_LINUX
+    return TL_CHECK_WIN if os.name == "nt" else TL_CHECK_LINUX
 
 
 def finalize_firmware() -> None:
@@ -333,6 +474,9 @@ def finalize_firmware() -> None:
     result = subprocess.run([str(checker.resolve()), str(BIN.resolve())], cwd=checker.parent, check=False)
     if result.returncode != 0:
         die(f"Telink firmware checker failed, exit code={result.returncode}", result.returncode)
+
+    BUILD_ROOT.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(BIN, CANONICAL_BIN)
 
 
 def git_head() -> str | None:
@@ -387,17 +531,41 @@ def validate_map_sram() -> None:
         info("TLSR8251 SRAM check: linker ASSERT active; MAP symbol parser did not locate _ram_use_end_")
 
 
-def write_manifest() -> None:
+def selected_config_inputs() -> list[Path]:
+    base = SDK_DIR / "vendor" / "ble_sample"
+    return [
+        base / "bms_board.h",
+        base / "board_legacy_309.h",
+        base / "board_hs_d011.h",
+        base / "bms_afe.h",
+        base / "app_config.h",
+    ]
+
+
+def write_manifest(profile: dict[str, object]) -> None:
     if not BIN.exists() or not ELF.exists():
         die("build artifacts missing; run build/rebuild first")
     order = validate_source_order(verbose=False)
-    inputs = [BUILD_MK, SOURCE_ORDER_FILE, LINKER_FILE, STARTUP_FILE, *VENDOR_LIBS]
+    inputs = [BUILD_MK, SOURCE_ORDER_FILE, LINKER_FILE, STARTUP_FILE, *VENDOR_LIBS, *selected_config_inputs()]
+    source_inputs = {
+        rel(SDK_DIR / p): sha256(SDK_DIR / p)
+        for p in order
+        if (SDK_DIR / p).exists()
+    }
     manifest = {
-        "format": 2,
+        "format": 3,
         "generated_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "git_head": git_head(),
         "target": f"{TARGET_MCU} / B85 / 825x_ble_sample",
         "startup_profile": STARTUP_PROFILE,
+        "build_profile": {
+            "board": profile["board"],
+            "board_label": profile["board_label"],
+            "board_define": profile["board_define"],
+            "afe": profile["afe"],
+            "afe_define": profile["afe_define"],
+            "afe_mode": profile["afe_mode"],
+        },
         "sram": {
             "base": f"0x{SRAM_BASE:06X}",
             "size_bytes": SRAM_BYTES,
@@ -410,12 +578,19 @@ def write_manifest() -> None:
             "elf": {"path": rel(ELF), "size": ELF.stat().st_size, "sha256": sha256(ELF)},
             "bin": {"path": rel(BIN), "size": BIN.stat().st_size, "sha256": sha256(BIN)},
             "raw_bin": {"path": rel(RAW_BIN), "size": RAW_BIN.stat().st_size, "sha256": sha256(RAW_BIN)},
+            "canonical_bin": {
+                "path": rel(CANONICAL_BIN),
+                "size": CANONICAL_BIN.stat().st_size,
+                "sha256": sha256(CANONICAL_BIN),
+            },
         },
-        "build_inputs": {
-            rel(p): sha256(p) for p in inputs if p.exists()
-        },
+        "build_inputs": {rel(p): sha256(p) for p in inputs if p.exists()},
+        "source_inputs": source_inputs,
     }
+    MANIFEST.parent.mkdir(parents=True, exist_ok=True)
     MANIFEST.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    shutil.copy2(MANIFEST, CANONICAL_MANIFEST)
+    write_last_profile(profile)
     info(f"manifest: {MANIFEST}")
 
 
@@ -429,26 +604,48 @@ def verify_manifest() -> None:
         if not p.exists():
             failures.append(f"{name}: missing {p}")
             continue
-        actual = sha256(p)
-        if actual != item["sha256"]:
+        if sha256(p) != item["sha256"]:
             failures.append(f"{name}: sha256 mismatch")
-    for path_text, expected in data.get("build_inputs", {}).items():
-        p = REPO_ROOT / path_text
-        if not p.exists() or sha256(p) != expected:
-            failures.append(f"build input changed: {path_text}")
+    for section in ("build_inputs", "source_inputs"):
+        for path_text, expected in data.get(section, {}).items():
+            p = REPO_ROOT / path_text
+            if not p.exists() or sha256(p) != expected:
+                failures.append(f"{section[:-1]} changed: {path_text}")
     if failures:
         die("manifest verification failed:\n  " + "\n  ".join(failures))
+    profile = data.get("build_profile", {})
+    if profile:
+        info(
+            f"manifest profile: board={profile.get('board')} "
+            f"afe={profile.get('afe')} mode={profile.get('afe_mode')}"
+        )
     info("manifest verification PASS")
 
 
-def cmd_env(_: argparse.Namespace) -> int:
+def cmd_profiles(_: argparse.Namespace) -> int:
+    print("Available boards / valid AFE combinations:")
+    for board, cfg in BOARD_PROFILES.items():
+        print(f"  {board:<12} default={cfg['default_afe']:<10} allowed={', '.join(cfg['afes'])}")
+    print("\nAFE modes:")
+    for afe, cfg in AFE_MODELS.items():
+        print(f"  {afe:<10} {cfg['mode']}")
+    print("\nDefault build when --board/--afe are omitted:")
+    print_profile(make_profile(DEFAULT_BOARD), prefix="  ")
+    return 0
+
+
+def cmd_env(args: argparse.Namespace) -> int:
+    profile = resolve_profile(args)
+    configure_artifact_paths(profile)
     env = toolchain_env()
     validate_target_contract()
+    print_profile(profile)
     print(f"repo              : {REPO_ROOT}")
     print(f"sdk               : {SDK_DIR} (exists={SDK_DIR.exists()})")
     print(f"linker            : {LINKER_FILE} (exists={LINKER_FILE.exists()})")
     print(f"startup           : {STARTUP_FILE} (exists={STARTUP_FILE.exists()})")
     print(f"build output      : {BUILD_DIR}")
+    print(f"canonical BIN     : {CANONICAL_BIN}")
     for lib in VENDOR_LIBS:
         print(f"vendor library    : {lib} (exists={lib.exists()})")
     print(f"fw checker win    : {TL_CHECK_WIN} (exists={TL_CHECK_WIN.exists()})")
@@ -459,7 +656,6 @@ def cmd_env(_: argparse.Namespace) -> int:
     print(f"tc32-elf-gcc      : {gcc}")
     print(f"compiler version  : {command_version([gcc, '--version'])}")
     validate_source_order()
-    print(f"target MCU        : {TARGET_MCU}")
     print(f"startup profile   : {STARTUP_PROFILE}")
     print(f"SRAM              : 0x{SRAM_BASE:06X}..0x{SRAM_END - 1:06X} ({SRAM_BYTES // 1024} KiB)")
     print(f"main SP after reset: 0x{SRAM_END:06X}")
@@ -475,41 +671,52 @@ def cmd_sources(args: argparse.Namespace) -> int:
     return 0
 
 
-def do_build(jobs: int, clean: bool) -> None:
+def do_build(args: argparse.Namespace, clean: bool) -> None:
+    profile = resolve_profile(args)
+    configure_artifact_paths(profile)
     if clean and BUILD_DIR.exists():
-        info(f"removing previous CLI output: {BUILD_DIR}")
+        info(f"removing previous profile output: {BUILD_DIR}")
         shutil.rmtree(BUILD_DIR)
-    run_make(jobs)
+    run_make(args.jobs, profile)
     validate_map_sram()
     finalize_firmware()
-    write_manifest()
+    write_manifest(profile)
     info(f"ELF : {ELF}")
     info(f"BIN : {BIN}")
+    info(f"latest burn BIN: {CANONICAL_BIN}")
     info(f"MAP : {MAP}")
     info(f"LST : {LST}")
 
 
 def cmd_build(args: argparse.Namespace) -> int:
-    do_build(args.jobs, clean=False)
+    do_build(args, clean=False)
     return 0
 
 
 def cmd_rebuild(args: argparse.Namespace) -> int:
-    do_build(args.jobs, clean=True)
+    do_build(args, clean=True)
     return 0
 
 
-def cmd_check_fw(_: argparse.Namespace) -> int:
+def select_existing_artifacts(args: argparse.Namespace) -> dict[str, object]:
+    profile = resolve_profile(args, prefer_last=True)
+    configure_artifact_paths(profile)
+    return profile
+
+
+def cmd_check_fw(args: argparse.Namespace) -> int:
+    profile = select_existing_artifacts(args)
     if not RAW_BIN.exists():
-        die("raw BIN missing; run build/rebuild first")
+        die(f"raw BIN missing for {profile['board']} + {profile['afe']}; run build/rebuild first")
     validate_map_sram()
     finalize_firmware()
-    write_manifest()
+    write_manifest(profile)
     info("official firmware post-check PASS")
     return 0
 
 
-def cmd_size(_: argparse.Namespace) -> int:
+def cmd_size(args: argparse.Namespace) -> int:
+    select_existing_artifacts(args)
     if not ELF.exists():
         die("ELF missing; run build/rebuild first")
     env = toolchain_env()
@@ -517,9 +724,11 @@ def cmd_size(_: argparse.Namespace) -> int:
     return subprocess.run([tool, "-t", str(ELF)], env=env, check=False).returncode
 
 
-def cmd_map(_: argparse.Namespace) -> int:
+def cmd_map(args: argparse.Namespace) -> int:
+    profile = select_existing_artifacts(args)
     if not MAP.exists():
         die("MAP missing; run build/rebuild first")
+    print(f"Profile: board={profile['board']} afe={profile['afe']} mode={profile['afe_mode']}")
     text = MAP.read_text(encoding="utf-8", errors="replace")
     print(f"MAP: {MAP} ({MAP.stat().st_size} bytes)")
     for symbol in ("_bin_size_", "_code_size_", "_ram_use_end_", "_start_bss_", "_end_bss_", "__SRAM_SIZE"):
@@ -535,27 +744,46 @@ def cmd_map(_: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_manifest(_: argparse.Namespace) -> int:
-    write_manifest()
+def cmd_manifest(args: argparse.Namespace) -> int:
+    profile = select_existing_artifacts(args)
+    write_manifest(profile)
     return 0
 
 
-def cmd_verify(_: argparse.Namespace) -> int:
+def cmd_verify(args: argparse.Namespace) -> int:
+    select_existing_artifacts(args)
     verify_manifest()
     return 0
 
 
 def cmd_ci(args: argparse.Namespace) -> int:
-    do_build(args.jobs, clean=True)
+    do_build(args, clean=True)
     verify_manifest()
     return 0
 
 
+def add_profile_args(s: argparse.ArgumentParser) -> None:
+    s.add_argument(
+        "--board",
+        metavar="NAME",
+        help="board profile (legacy-309, hs-d011); aliases: 309, d011",
+    )
+    s.add_argument(
+        "--afe",
+        metavar="NAME",
+        help="AFE backend (mock, sh367309, sh3673510); aliases: sim, 309, 3510",
+    )
+
+
 def parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="HS-D011 TLSR8251 no-IDE build tooling")
+    p = argparse.ArgumentParser(description="TLSR8251 multi-board/multi-AFE no-IDE build tooling")
     sub = p.add_subparsers(dest="command", required=True)
 
+    s = sub.add_parser("profiles", help="list valid board/AFE build combinations")
+    s.set_defaults(func=cmd_profiles)
+
     s = sub.add_parser("env", help="check local compiler/build environment")
+    add_profile_args(s)
     s.set_defaults(func=cmd_env)
 
     s = sub.add_parser("sources", help="check/update the locked source/link order")
@@ -569,19 +797,20 @@ def parser() -> argparse.ArgumentParser:
         ("ci", cmd_ci, "clean build plus manifest verification"),
     ):
         s = sub.add_parser(name, help=help_text)
+        add_profile_args(s)
         s.add_argument("--jobs", type=int, default=max(1, min(8, os.cpu_count() or 1)))
         s.set_defaults(func=func)
 
-    s = sub.add_parser("check-fw", help="regenerate canonical BIN and run Telink checker")
-    s.set_defaults(func=cmd_check_fw)
-    s = sub.add_parser("size", help="print TC32 ELF size")
-    s.set_defaults(func=cmd_size)
-    s = sub.add_parser("map", help="show key MAP symbols and TLSR8251 SRAM margin")
-    s.set_defaults(func=cmd_map)
-    s = sub.add_parser("manifest", help="write build integrity manifest")
-    s.set_defaults(func=cmd_manifest)
-    s = sub.add_parser("verify", help="verify artifacts/build inputs against manifest")
-    s.set_defaults(func=cmd_verify)
+    for name, func, help_text in (
+        ("check-fw", cmd_check_fw, "regenerate canonical BIN and run Telink checker"),
+        ("size", cmd_size, "print TC32 ELF size"),
+        ("map", cmd_map, "show key MAP symbols and TLSR8251 SRAM margin"),
+        ("manifest", cmd_manifest, "write build integrity manifest"),
+        ("verify", cmd_verify, "verify artifacts/build inputs against manifest"),
+    ):
+        s = sub.add_parser(name, help=help_text)
+        add_profile_args(s)
+        s.set_defaults(func=func)
     return p
 
 
