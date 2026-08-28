@@ -21,7 +21,9 @@ BMS_BOARD_PROFILE ?= 2
 BMS_AFE_MODEL ?= 1
 
 # Production identity follows the selected AFE and the local build date.
-# Examples: SH367309-20260828, SH3673510-20260828, MOCK-20260828.
+# BMS_BUILD_DATE is numeric on purpose: the C source stringifies it, avoiding
+# fragile quote escaping across Windows GNU Make/cmd and TC32 GCC.
+# Examples shown in the build log: SH367309-20260828, SH3673510-20260828.
 # Use rebuild for release/test images so a new build day cannot reuse an older
 # object that still contains yesterday's identity string.
 PYTHON ?= python
@@ -35,7 +37,7 @@ BMS_AFE_SERIAL_NAME := SH3673510
 else
 BMS_AFE_SERIAL_NAME := UNKNOWN
 endif
-BMS_BUILD_SERIAL ?= $(BMS_AFE_SERIAL_NAME)-$(BMS_BUILD_DATE)
+BMS_BUILD_SERIAL := $(BMS_AFE_SERIAL_NAME)-$(BMS_BUILD_DATE)
 
 CC := tc32-elf-gcc
 LD := tc32-elf-ld
@@ -63,7 +65,7 @@ DEFINES := \
 	-DCHIP_TYPE=CHIP_TYPE_825x \
 	-DBMS_BOARD_PROFILE=$(BMS_BOARD_PROFILE) \
 	-DBMS_AFE_MODEL=$(BMS_AFE_MODEL) \
-	-DBMS_BUILD_SERIAL=\"$(BMS_BUILD_SERIAL)\"
+	-DBMS_BUILD_DATE=$(BMS_BUILD_DATE)
 
 # Exact compiler-side options used by the existing 825x_ble_sample config.
 CFLAGS_BASE := \
