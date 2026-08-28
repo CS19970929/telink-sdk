@@ -41,7 +41,7 @@ The firmware may split a Modbus response into multiple 20-byte notifications. `B
 ## Requirements
 
 - Windows 10/11.
-- .NET 8 SDK for source builds, or use a self-contained published build.
+- .NET 7 SDK or later for source builds. The project currently targets `net7.0` / `net7.0-windows10.0.19041.0` so an existing .NET SDK 7.0.400 installation can build it directly.
 - Bluetooth LE adapter for BLE transport.
 - 3.3 V USB-TTL or the actual serial interface for direct UART testing.
 
