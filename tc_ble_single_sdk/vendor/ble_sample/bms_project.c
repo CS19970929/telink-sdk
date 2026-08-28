@@ -14,6 +14,7 @@ static u8 s_afe_fail_count;
 
 static void board_gpio_init(void)
 {
+#if !BMS_AFE_SIMULATION_ENABLE
     const GPIO_PinTypeDef outputs[] = {
         BMS_HEAT_CHG_PIN, BMS_HEAT_RF_EN_PIN, BMS_LED_PIN, BMS_CMNT_EN_PIN
     };
@@ -36,6 +37,11 @@ static void board_gpio_init(void)
     gpio_set_func(BMS_CMNT_WAKE_PIN, AS_GPIO);
     gpio_set_input_en(BMS_CMNT_WAKE_PIN, 1);
     gpio_set_output_en(BMS_CMNT_WAKE_PIN, 0);
+#else
+    /* A pre-hardware simulation image may be flashed to an older TLSR8251 BMS
+     * board with a different AFE/pin map. Do not drive any HS-D011-specific IO.
+     */
+#endif
 }
 
 static int afe_start(void)
@@ -44,7 +50,8 @@ static int afe_start(void)
     if (rc != 0) return rc;
 
     /* AFE registers are a runtime projection of the common parameter DB.
-     * Re-apply them after every AFE reset/re-initialization.
+     * In simulation the adapter exposes no direct hardware mappings, so this
+     * remains a no-op and does not touch an AFE bus.
      */
     rc = bms_param_apply_hardware_all();
     if (rc != 0) return -20 + rc;
@@ -58,6 +65,14 @@ void bms_project_init(void)
 
     memset(&g_bms, 0, sizeof(g_bms));
     g_bms.soh = 100u;
+#if BMS_AFE_SIMULATION_ENABLE
+    /* Useful, non-protecting defaults for BLE/Modbus application testing. */
+    g_bms.soc = 75u;
+    g_bms.capacity_factory_x100 = 5000u; /* 50.00 Ah */
+    g_bms.capacity_full_x100 = 4900u;    /* 49.00 Ah */
+    g_bms.capacity_now_x100 = 3675u;     /* 36.75 Ah */
+    g_bms.cycle_count = 12u;
+#endif
 
     board_gpio_init();
     btname_init();
@@ -82,11 +97,13 @@ void bms_project_init(void)
     s_afe_fail_count = 0u;
 
     /* Software protection starts with user MOS requests enabled but does not
-     * issue an ON request until the first complete AFE sample is evaluated.
+     * issue an ON request until the first complete AFE/sample frame is evaluated.
      */
     bms_protect_init();
 
+#if !BMS_AFE_SIMULATION_ENABLE
     modbus_uart_init();
+#endif
     s_afe_poll_tick = clock_time();
 }
 
@@ -94,7 +111,9 @@ void bms_project_process(void)
 {
     int rc;
 
+#if !BMS_AFE_SIMULATION_ENABLE
     modbus_uart_process();
+#endif
     bms_param_process();
 
     if (clock_time_exceed(s_afe_poll_tick, BMS_AFE_POLL_PERIOD_US)) {
@@ -124,7 +143,9 @@ void bms_project_process(void)
 
 void bms_project_irq_handler(void)
 {
+#if !BMS_AFE_SIMULATION_ENABLE
     modbus_uart_irq_proc();
+#endif
 }
 
 const bms_project_state_t *bms_project_get_state(void)
