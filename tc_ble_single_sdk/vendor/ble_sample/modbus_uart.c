@@ -2,6 +2,7 @@
 #include "modbus_rtu.h"
 #include "bms_board.h"
 #include "app_config.h"
+#include "app_ui.h"
 #include "drivers.h"
 #include "stack/ble/ble.h"
 #include <string.h>
@@ -177,8 +178,8 @@ static void serial_pm_request_wake(void)
 {
     if (s_pm_state != SERIAL_PM_WAKE_ARMED || s_pm_wake_pending) return;
 
-    /* Do not restore UART in IRQ context. Stop further RISC0 events from the
-     * remainder of the wake frame and let the normal project loop reinitialize
+    /* Do not restore UART in IRQ/callback context. Stop further wake events from
+     * the remainder of the first frame and let the normal project loop restore
      * the exact known-good UART/DMA sequence. The current frame may be lost.
      */
     gpio_en_interrupt_risc0(BMS_SERIAL_RX_GPIO, 0);
@@ -208,6 +209,23 @@ static void serial_pm_suspend_enter_cb(u8 e, u8 *p, int n)
     (void)e; (void)p; (void)n;
 #endif
 }
+
+static void serial_pm_gpio_early_wakeup_cb(u8 e, u8 *p, int n)
+{
+    /* PAD wake is the authoritative wake path from Suspend. RISC0 below is kept
+     * as the same falling-edge detector used by the proven legacy bus mux, so
+     * serial wake also works when the CPU happens to be awake for a BMS task.
+     */
+    serial_pm_request_wake();
+
+#if UI_KEYBOARD_ENABLE
+    proc_keyboard(e, p, n);
+#elif UI_BUTTON_ENABLE
+    proc_button(e, p, n);
+#else
+    (void)e; (void)p; (void)n;
+#endif
+}
 #endif /* BMS_SERIAL_PM_ENABLE */
 
 void modbus_uart_init(void)
@@ -232,11 +250,13 @@ void modbus_uart_init(void)
 
 #if BMS_SERIAL_PM_ENABLE && BLE_APP_PM_ENABLE
     /* bms_project_init() runs after user_init_normal(), so app.c has already
-     * registered task_sleep_enter and this wrapper safely becomes the final
-     * suspend-enter callback while preserving the original callback behavior.
+     * registered its callbacks. These wrappers become the final callbacks while
+     * preserving task_sleep_enter and optional keyboard/button behavior.
      */
     bls_app_registerEventCallback(BLT_EV_FLAG_SUSPEND_ENTER,
                                   &serial_pm_suspend_enter_cb);
+    bls_app_registerEventCallback(BLT_EV_FLAG_GPIO_EARLY_WAKEUP,
+                                  &serial_pm_gpio_early_wakeup_cb);
 #endif
 }
 
@@ -302,9 +322,9 @@ void modbus_uart_send(const u8 *data, u32 len)
 void modbus_uart_process(void)
 {
 #if BMS_SERIAL_PM_ENABLE
-    /* A RISC0/PAD wake only posts a request in IRQ context. Re-enter the exact
-     * stable UART path here, after app/main processing and before the next BLE
-     * LinkLayer iteration. The wake frame itself is intentionally disposable.
+    /* GPIO/PAD wake only posts a request in IRQ/callback context. Re-enter the
+     * exact stable UART path here, after app/main processing and before the next
+     * BLE LinkLayer iteration. The wake frame itself is intentionally disposable.
      */
     if (s_pm_wake_pending)
         serial_pm_restore_from_wake();
