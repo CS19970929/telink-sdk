@@ -36,16 +36,21 @@
  */
 #define BMS_SH309_CELL_MAP_INIT         {0u,1u,2u,3u,4u,5u,6u,7u,8u,9u}
 
-/* First real-data bring-up is deliberately read-mostly. Do not reset/program
- * MTP or take over FET control until voltage/current/temperature have been
- * verified against the proven legacy firmware and instruments.
+/* Keep the already-proven AFE parameter image untouched, but now take over the
+ * runtime CHG/DSG MOS bits after a valid AFE sample has passed common software
+ * protection. The reference D3PRO board additionally uses PB6 as AFE_CTL and
+ * PA1 as MCC_C; both start LOW and are only asserted by a successful MOS write.
  */
 #ifndef BMS_SH309_RESET_ON_INIT
 #define BMS_SH309_RESET_ON_INIT         0u
 #endif
 #ifndef BMS_SH309_MOS_CONTROL_ENABLE
-#define BMS_SH309_MOS_CONTROL_ENABLE    0u
+#define BMS_SH309_MOS_CONTROL_ENABLE    1u
 #endif
+#define BMS_SH309_AFE_CTL_PIN           GPIO_PB6
+#define BMS_SH309_MCC_C_PIN             GPIO_PA1
+#define BMS_SH309_GATE_ACTIVE_LEVEL     1u
+#define BMS_SH309_MCC_C_ACTIVE_LEVEL    1u
 
 /* The proven legacy project uses a direct 115200 8N1 UART on PC2/PC3. PA1 is
  * MCC_C on this PCB, so there is deliberately no RS485 direction pin here.
