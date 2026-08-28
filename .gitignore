@@ -1,0 +1,12 @@
+# Command-line TC32 build artifacts
+tc_ble_single_sdk/project/tlsr_tc32/B85/825x_ble_sample_cli/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Common generated firmware/debug artifacts
+*.elf
+*.map
+*.lst
+*.raw.bin
