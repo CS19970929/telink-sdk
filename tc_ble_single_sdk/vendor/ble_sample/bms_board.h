@@ -63,4 +63,12 @@
 #define BMS_PROTECT_OPPOSITE_REOPEN_ENABLE 1u
 #endif
 
+/* The production SOC estimator is not integrated yet. A zero/uninitialized SOC
+ * must therefore never close the discharge MOS. Enable this only when SOC has
+ * a validity model and real coulomb/OCV estimation behind it.
+ */
+#ifndef BMS_SOC_PROTECT_ENABLE
+#define BMS_SOC_PROTECT_ENABLE 0u
+#endif
+
 #endif /* BMS_BOARD_H_ */
