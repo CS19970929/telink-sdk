@@ -50,7 +50,7 @@ static const u16 my_periConnParameters[4] = {20, 40, 0, 1000};
 _attribute_data_retention_ static u16 serviceChangeVal[2] = {0, 0};
 _attribute_data_retention_ static u8 serviceChangeCCC[2] = {0, 0};
 
-u8 my_devName[BTNAME_TOTAL_MAX_LEN] = "BT_HSD011_10S50A";
+u8 my_devName[BTNAME_TOTAL_MAX_LEN] = "BT_d011_default";
 static const u8 my_PnPtrs[] = {0x02, 0x8a, 0x24, 0x66, 0x82, 0x01, 0x00};
 
 static const u16 my_batServiceUUID = SERVICE_UUID_BATTERY;
