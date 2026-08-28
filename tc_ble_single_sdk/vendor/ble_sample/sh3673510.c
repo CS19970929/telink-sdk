@@ -18,6 +18,16 @@
 #define SH3673510_WARMUP_US     12000u
 #define SH3673510_PUMP_BUILD_US 130000u
 
+/* SH36735xx manual: current_mA = 100000000 * CUR / (29127 * Rsense_uOhm).
+ * Do the 64-bit math only as a compile-time constant when deriving a Q10
+ * coefficient. Runtime then needs only signed 32-bit multiply/divide, avoiding
+ * TC32 libgcc __muldi3/__divdi3 helpers. With this board's 250 uOhm shunt the
+ * coefficient is 14063 and the worst-case product remains well inside s32.
+ */
+#define SH_CURRENT_Q10_DEN       ((s64)29127L * BMS_RSENSE_UOHM)
+#define SH_CURRENT_MA_PER_RAW_Q10 \
+    ((s32)((((s64)100000000L * 1024L) + (SH_CURRENT_Q10_DEN / 2L)) / SH_CURRENT_Q10_DEN))
+
 static u8 sh_crc8_update(u8 crc, u8 data)
 {
     u8 i;
@@ -322,6 +332,7 @@ int sh3673510_sample(sh3673510_sample_t *s)
     u8 i;
     u16 raw;
     u32 sum = 0;
+    s32 current_q10;
 
     if (!s) return -1;
     memset(s, 0, sizeof(*s));
@@ -356,10 +367,14 @@ int sh3673510_sample(sh3673510_sample_t *s)
 
     s->current_raw = (s16)be16(cur);
 #if (BMS_RSENSE_UOHM > 0)
-    s->current_ma = (s32)(((s64)100000000L * s->current_raw) /
-                          ((s64)29127L * BMS_RSENSE_UOHM));
+    current_q10 = (s32)s->current_raw * SH_CURRENT_MA_PER_RAW_Q10;
+    if (current_q10 >= 0)
+        s->current_ma = (current_q10 + 512L) / 1024L;
+    else
+        s->current_ma = (current_q10 - 512L) / 1024L;
     s->current_ma_valid = 1u;
 #else
+    current_q10 = 0;
     s->current_ma = 0;
     s->current_ma_valid = 0u;
 #endif
