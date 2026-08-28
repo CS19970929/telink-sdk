@@ -16,10 +16,15 @@ public sealed class ModbusRtuClient
     public async Task<ushort[]> ReadHoldingRegistersAsync(ushort start, ushort quantity, CancellationToken cancellationToken = default)
     {
         if (quantity is 0 or > 125) throw new ArgumentOutOfRangeException(nameof(quantity));
-        Span<byte> pdu = stackalloc byte[6];
-        pdu[0] = SlaveAddress; pdu[1] = 0x03;
-        pdu[2] = (byte)(start >> 8); pdu[3] = (byte)start;
-        pdu[4] = (byte)(quantity >> 8); pdu[5] = (byte)quantity;
+
+        // Keep async methods free of Span/stackalloc locals for C# 11 / .NET 7.
+        var pdu = new byte[6];
+        pdu[0] = SlaveAddress;
+        pdu[1] = 0x03;
+        pdu[2] = (byte)(start >> 8);
+        pdu[3] = (byte)start;
+        pdu[4] = (byte)(quantity >> 8);
+        pdu[5] = (byte)quantity;
 
         var response = await ExecuteAsync(ModbusCrc16.Append(pdu), 0x03, cancellationToken);
         if (response.Length != 5 + quantity * 2 || response[2] != quantity * 2)
@@ -33,14 +38,19 @@ public sealed class ModbusRtuClient
 
     public async Task WriteSingleRegisterAsync(ushort register, ushort value, CancellationToken cancellationToken = default)
     {
-        Span<byte> pdu = stackalloc byte[6];
-        pdu[0] = SlaveAddress; pdu[1] = 0x06;
-        pdu[2] = (byte)(register >> 8); pdu[3] = (byte)register;
-        pdu[4] = (byte)(value >> 8); pdu[5] = (byte)value;
+        // Do not use Span/stackalloc locals here: ref-struct locals are not
+        // permitted in async methods by the C# 11 compiler used with .NET 7.
+        var pdu = new byte[6];
+        pdu[0] = SlaveAddress;
+        pdu[1] = 0x06;
+        pdu[2] = (byte)(register >> 8);
+        pdu[3] = (byte)register;
+        pdu[4] = (byte)(value >> 8);
+        pdu[5] = (byte)value;
 
         var request = ModbusCrc16.Append(pdu);
         var response = await ExecuteAsync(request, 0x06, cancellationToken);
-        if (!response.AsSpan(0, 6).SequenceEqual(request.AsSpan(0, 6)))
+        if (response.Length < 6 || !PrefixEquals(response, request, 6))
             throw new InvalidDataException("FC06 echo mismatch.");
     }
 
@@ -48,9 +58,12 @@ public sealed class ModbusRtuClient
     {
         if (values.Count is 0 or > 123) throw new ArgumentOutOfRangeException(nameof(values));
         var payload = new byte[7 + values.Count * 2];
-        payload[0] = SlaveAddress; payload[1] = 0x10;
-        payload[2] = (byte)(start >> 8); payload[3] = (byte)start;
-        payload[4] = (byte)(values.Count >> 8); payload[5] = (byte)values.Count;
+        payload[0] = SlaveAddress;
+        payload[1] = 0x10;
+        payload[2] = (byte)(start >> 8);
+        payload[3] = (byte)start;
+        payload[4] = (byte)(values.Count >> 8);
+        payload[5] = (byte)values.Count;
         payload[6] = (byte)(values.Count * 2);
         for (var i = 0; i < values.Count; i++)
         {
@@ -97,5 +110,15 @@ public sealed class ModbusRtuClient
             throw new IOException($"Modbus exception 0x{response[2]:X2} for function 0x{function:X2}.");
         if (response[1] != function)
             throw new InvalidDataException($"Unexpected Modbus function 0x{response[1]:X2}.");
+    }
+
+    private static bool PrefixEquals(byte[] left, byte[] right, int count)
+    {
+        if (left.Length < count || right.Length < count) return false;
+        for (var i = 0; i < count; i++)
+        {
+            if (left[i] != right[i]) return false;
+        }
+        return true;
     }
 }
