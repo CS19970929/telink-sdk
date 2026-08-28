@@ -578,12 +578,12 @@ def write_manifest(profile: dict[str, object]) -> None:
             "elf": {"path": rel(ELF), "size": ELF.stat().st_size, "sha256": sha256(ELF)},
             "bin": {"path": rel(BIN), "size": BIN.stat().st_size, "sha256": sha256(BIN)},
             "raw_bin": {"path": rel(RAW_BIN), "size": RAW_BIN.stat().st_size, "sha256": sha256(RAW_BIN)},
-            "canonical_bin": {
-                "path": rel(CANONICAL_BIN),
-                "size": CANONICAL_BIN.stat().st_size,
-                "sha256": sha256(CANONICAL_BIN),
-            },
         },
+        # The top-level burn BIN is intentionally mutable: it always mirrors the
+        # most recently post-checked profile. Keep its path for convenience but
+        # do not hash it into a profile manifest, otherwise building a different
+        # profile would invalidate older profile manifests.
+        "canonical_burn_path": rel(CANONICAL_BIN),
         "build_inputs": {rel(p): sha256(p) for p in inputs if p.exists()},
         "source_inputs": source_inputs,
     }
