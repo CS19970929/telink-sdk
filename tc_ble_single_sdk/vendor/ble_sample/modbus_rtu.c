@@ -2,11 +2,27 @@
 #include "bms_project.h"
 #include "bms_param.h"
 #include "bms_protect.h"
+#include "bms_board.h"
 #include "btname_modbus.h"
 #include <string.h>
 
-static const u8 k_serial[] = "HSD011-10S50A";
+#ifndef BMS_BUILD_SERIAL
+#define BMS_BUILD_SERIAL "UNKNOWN-00000000"
+#endif
+
+/* BMS_BUILD_SERIAL is injected by bms_tools/build.mk from the selected AFE and
+ * local build date, e.g. SH367309-20260828 / SH3673510-20260828 / MOCK-20260828.
+ * This makes the production-identification registers self-describe the image
+ * that was actually selected on the command line.
+ */
+static const u8 k_serial[] = BMS_BUILD_SERIAL;
+#if (BMS_BOARD_PROFILE == BMS_BOARD_PROFILE_LEGACY_309)
+static const u8 k_hwver[]  = "LEGACY-309";
+#elif (BMS_BOARD_PROFILE == BMS_BOARD_PROFILE_HS_D011)
 static const u8 k_hwver[]  = "HS-D011-V1";
+#else
+static const u8 k_hwver[]  = "UNKNOWN";
+#endif
 static const u8 k_swver[]  = "V1.1.0";
 
 /* FC16 can carry at most 123 registers. Keep the scratch buffer out of the
