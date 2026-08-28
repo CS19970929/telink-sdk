@@ -68,10 +68,11 @@
  * ACTIVE deliberately preserves the exact UART/DMA flow that has been bench
  * verified against the legacy SH367309 project and vetoes BLE Suspend.
  * After 3 seconds without RX/TX activity, plus a short boundary guard, the
- * transport leaves UART once, remuxes RX to GPIO, and permits normal BLE/BMS
- * Suspend again. RX falling/LOW is armed through both GPIO RISC0 and PAD wake.
- * The first request after sleep is allowed to be lost; UART/DMA are restored in
- * normal main-loop context and subsequent Modbus requests communicate normally.
+ * transport leaves UART once and permits normal BLE/BMS Suspend again.
+ *
+ * BMS_SERIAL_PM_VARIANT exists specifically for controlled power A/B tests.
+ * Normal builds default to CURRENT, which is the already bench-validated
+ * RISC0+PAD wake implementation with TX held HIGH while serial is asleep.
  */
 #ifndef BMS_SERIAL_KEEP_AWAKE
 #define BMS_SERIAL_KEEP_AWAKE           1u
@@ -90,6 +91,40 @@
 #endif
 #ifndef BMS_SERIAL_RX_SLEEP_PULL
 #define BMS_SERIAL_RX_SLEEP_PULL        PM_PIN_PULLUP_1M
+#endif
+
+#define BMS_SERIAL_PM_VARIANT_CURRENT       0u /* RISC0 + PAD, TX held HIGH: current validated behavior */
+#define BMS_SERIAL_PM_VARIANT_DUAL_HIZ      1u /* RISC0 + PAD, TX high-Z */
+#define BMS_SERIAL_PM_VARIANT_PAD_HIZ       2u /* PAD only, TX high-Z: preferred low-power candidate */
+#define BMS_SERIAL_PM_VARIANT_NOWAKE_HIZ    3u /* no serial wake, TX high-Z: power-reference firmware */
+
+#ifndef BMS_SERIAL_PM_VARIANT
+#define BMS_SERIAL_PM_VARIANT BMS_SERIAL_PM_VARIANT_CURRENT
+#endif
+
+#if (BMS_SERIAL_PM_VARIANT > BMS_SERIAL_PM_VARIANT_NOWAKE_HIZ)
+#error "Unsupported BMS_SERIAL_PM_VARIANT"
+#endif
+
+#if (BMS_SERIAL_PM_VARIANT == BMS_SERIAL_PM_VARIANT_CURRENT) || \
+    (BMS_SERIAL_PM_VARIANT == BMS_SERIAL_PM_VARIANT_DUAL_HIZ)
+#define BMS_SERIAL_PM_USE_RISC0_WAKE    1u
+#else
+#define BMS_SERIAL_PM_USE_RISC0_WAKE    0u
+#endif
+
+#if (BMS_SERIAL_PM_VARIANT == BMS_SERIAL_PM_VARIANT_CURRENT) || \
+    (BMS_SERIAL_PM_VARIANT == BMS_SERIAL_PM_VARIANT_DUAL_HIZ) || \
+    (BMS_SERIAL_PM_VARIANT == BMS_SERIAL_PM_VARIANT_PAD_HIZ)
+#define BMS_SERIAL_PM_USE_PAD_WAKE      1u
+#else
+#define BMS_SERIAL_PM_USE_PAD_WAKE      0u
+#endif
+
+#if (BMS_SERIAL_PM_VARIANT == BMS_SERIAL_PM_VARIANT_CURRENT)
+#define BMS_SERIAL_PM_TX_SLEEP_HIZ      0u
+#else
+#define BMS_SERIAL_PM_TX_SLEEP_HIZ      1u
 #endif
 
 #if BMS_SERIAL_ENABLE && BMS_SERIAL_PM_ENABLE
