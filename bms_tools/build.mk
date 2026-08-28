@@ -1,7 +1,7 @@
 # HS-D011 TLSR8251 command-line build driver.
 #
-# This intentionally mirrors the existing Telink Eclipse 825x_ble_sample
-# configuration instead of introducing a new ABI/toolchain contract.
+# This keeps the existing Telink Eclipse 825x_ble_sample C ABI/link contract,
+# while selecting the startup SRAM profile for the actual TLSR8251 device.
 
 REPO_ROOT ?= .
 SDK_DIR ?= tc_ble_single_sdk
@@ -31,6 +31,9 @@ INCLUDES := \
 	-I"$(SDK_DIR)/common" \
 	-I"$(SDK_DIR)/drivers/B85"
 
+# __PROJECT_8258_BLE_SAMPLE__ is the SDK application-selection macro used by
+# vendor/common/default_config.h. It is not the silicon SRAM-size selector.
+# CHIP_TYPE_825x remains the correct B85-family compile target.
 DEFINES := \
 	-D__PROJECT_8258_BLE_SAMPLE__=1 \
 	-DCHIP_TYPE=CHIP_TYPE_825x
@@ -42,9 +45,14 @@ CFLAGS_BASE := \
 	-fpack-struct -fshort-enums -finline-small-functions \
 	-std=gnu99 -fshort-wchar -fms-extensions
 
-# Preserve the current Eclipse startup profile during the no-IDE migration.
-# This is deliberately not changed as part of the build-system migration.
-AFLAGS_BASE := -DMCU_STARTUP_8258
+# HS-D011 is populated with TLSR8251F512. In cstartup_825x.S the startup macro
+# is the SRAM-end selector:
+#   8251 -> 0x840000 + 32 KiB = 0x848000
+#   8253 -> 0x840000 + 48 KiB = 0x84C000
+#   8258 -> 0x840000 + 64 KiB = 0x850000
+# The old Eclipse profile used MCU_STARTUP_8258, which placed the main stack at
+# 0x850000. That is outside TLSR8251's 32 KiB SRAM. Use the actual 8251 profile.
+AFLAGS_BASE := -DMCU_STARTUP_8251
 
 CFLAGS := $(CFLAGS_BASE) $(INCLUDES) $(DEFINES)
 AFLAGS := $(AFLAGS_BASE)
