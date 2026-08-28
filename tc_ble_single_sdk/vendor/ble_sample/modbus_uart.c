@@ -65,10 +65,13 @@ static void serial_pm_set_suspend_allowed(u8 allowed)
 
 static void serial_note_activity(void)
 {
+    /* UART IRQs only update the timestamp/state. BLE PM policy is already held
+     * awake while SERIAL_PM_ACTIVE, so avoid calling LinkLayer PM APIs from the
+     * DMA IRQ path. Transitions into ACTIVE explicitly apply the PM veto.
+     */
     s_last_activity_tick = clock_time();
 #if BMS_SERIAL_PM_ENABLE
     s_pm_state = SERIAL_PM_ACTIVE;
-    serial_pm_set_suspend_allowed(0u);
 #endif
 }
 
@@ -221,6 +224,11 @@ void modbus_uart_init(void)
     serial_hw_start();
     serial_note_activity();
 
+#if BMS_SERIAL_PM_ENABLE
+    /* The first 3-second serial-active window starts immediately after boot. */
+    serial_pm_set_suspend_allowed(0u);
+#endif
+
 #if BMS_SERIAL_PM_ENABLE && BLE_APP_PM_ENABLE
     /* Install wrappers after app.c has registered its sample callbacks. */
     bls_app_registerEventCallback(BLT_EV_FLAG_SUSPEND_ENTER, &serial_pm_suspend_enter_cb);
@@ -288,6 +296,7 @@ void modbus_uart_process(void)
         s_pm_wake_pending = 0u;
         serial_hw_start();
         serial_note_activity();
+        serial_pm_set_suspend_allowed(0u);
         /* Deliberately discard any bytes from the wake frame. */
     }
 
