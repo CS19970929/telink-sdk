@@ -4,7 +4,7 @@
 #include "tl_common.h"
 #include "drivers.h"
 
-/* Board and AFE are independent compile-time selections.  A board profile owns
+/* Board and AFE are independent compile-time selections. A board profile owns
  * only physical wiring/BOM facts; the AFE model owns register/protocol logic.
  * This keeps bms_project/modbus/protection independent of a specific AFE.
  */
@@ -15,7 +15,7 @@
 #define BMS_AFE_MODEL_SH367309          1u
 #define BMS_AFE_MODEL_SH3673510         2u
 
-/* Current bench target: the existing TLSR8251 + SH367309 board.  Override from
+/* Current bench target: the existing TLSR8251 + SH367309 board. Override from
  * compiler flags or change this default when returning to HS-D011 bring-up.
  */
 #ifndef BMS_BOARD_PROFILE
@@ -63,36 +63,29 @@
 #define BMS_PROTECT_OPPOSITE_REOPEN_ENABLE 1u
 #endif
 
-/* Serial low-power policy: while serial is active, BLE suspend is vetoed so
- * UART/DMA can communicate normally. After 3 seconds without serial activity,
- * UART RX is released and the physical RX pin becomes a low-level wake pad.
- * The wake frame may be lost by design; the next Modbus request is processed
- * after UART/DMA are restored. This policy is common to direct UART and RS485.
+/* Serial-only policy.
  *
- * A short quiet guard is deliberately added after the 3-second timeout. It
- * prevents the PM transition from resetting UART/DMA at the same instant a new
- * request is arriving (a common race when a host polls close to the 3 s edge).
+ * The known-good legacy project multiplexes one-wire and UART. Once it enters
+ * UART mode, UART/DMA stay configured until the mux explicitly leaves that
+ * state. This project does not need one-wire, so it permanently uses the same
+ * UART-active behavior: RX is never remuxed to GPIO and no request is consumed
+ * merely as a wake frame.
+ *
+ * BLE Suspend gates clocks/resources needed by asynchronous UART DMA, therefore
+ * serial-only mode keeps Suspend disabled. This intentionally favors reliable
+ * communication over low current. A future low-power UART design should be a
+ * separate, explicitly validated feature rather than part of the base driver.
  */
-#ifndef BMS_SERIAL_PM_ENABLE
-#define BMS_SERIAL_PM_ENABLE            1u
-#endif
-#ifndef BMS_SERIAL_IDLE_SLEEP_MS
-#define BMS_SERIAL_IDLE_SLEEP_MS        3000u
-#endif
-#ifndef BMS_SERIAL_SLEEP_GUARD_MS
-#define BMS_SERIAL_SLEEP_GUARD_MS       20u
-#endif
-#ifndef BMS_SERIAL_WAKE_LEVEL
-#define BMS_SERIAL_WAKE_LEVEL           Level_Low
+#ifndef BMS_SERIAL_KEEP_AWAKE
+#define BMS_SERIAL_KEEP_AWAKE           1u
 #endif
 
-#if BMS_SERIAL_ENABLE && BMS_SERIAL_PM_ENABLE
-#ifndef BMS_SERIAL_TX_GPIO
-#error "BMS_SERIAL_TX_GPIO is required when serial low-power is enabled"
-#endif
-#ifndef BMS_SERIAL_RX_GPIO
-#error "BMS_SERIAL_RX_GPIO is required when serial low-power is enabled"
-#endif
+/* Deprecated compatibility switch. The UART/GPIO wake state machine has been
+ * removed from the serial driver; keep this defined as 0 so old conditionals do
+ * not accidentally re-enable that behavior.
+ */
+#ifndef BMS_SERIAL_PM_ENABLE
+#define BMS_SERIAL_PM_ENABLE            0u
 #endif
 
 /* The production SOC estimator is not integrated yet. A zero/uninitialized SOC
