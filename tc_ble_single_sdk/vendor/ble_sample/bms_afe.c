@@ -4,6 +4,117 @@
 #include "hs_d011_board.h"
 #include <string.h>
 
+#if BMS_AFE_SIMULATION_ENABLE
+
+static u16 s_sim_step;
+
+void bms_afe_get_info(bms_afe_info_t *info)
+{
+    if (!info) return;
+    info->afe_type = BMS_AFE_TYPE_SIMULATED;
+    info->cell_count = BMS_CELL_COUNT;
+    info->temp_mask = (u8)(BIT(0) | BIT(1) | BIT(3));
+    /* Simulation deliberately advertises no native hardware protection. The
+     * common software protection layer still runs against the simulated data.
+     */
+    info->feature_bits = 0u;
+}
+
+int bms_afe_init(void)
+{
+    s_sim_step = 0u;
+    return 0;
+}
+
+int bms_afe_sample(bms_afe_sample_t *sample)
+{
+    static const u8 cell_offset_mv[BMS_CELL_COUNT] = {0u, 3u, 6u, 2u, 5u, 8u, 4u, 7u, 1u, 4u};
+    u16 base_mv;
+    u16 phase;
+    u8 i;
+
+    if (!sample) return -1;
+    memset(sample, 0, sizeof(*sample));
+
+    /* Slow, deterministic variation makes it easy to verify that BLE/Modbus
+     * reads are live without ever approaching protection thresholds.
+     */
+    phase = (u16)((s_sim_step / 20u) % 5u);       /* one step every 2 seconds */
+    base_mv = (u16)(3300u + phase);               /* 3.300 .. 3.304 V/cell */
+
+    sample->cell_count = BMS_CELL_COUNT;
+    sample->cell_min_mv = 0xFFFFu;
+    for (i = 0; i < BMS_CELL_COUNT; ++i) {
+        u16 mv = (u16)(base_mv + cell_offset_mv[i]);
+        sample->cell_mv[i] = mv;
+        sample->pack_mv += mv;
+        if (mv < sample->cell_min_mv) sample->cell_min_mv = mv;
+        if (mv > sample->cell_max_mv) sample->cell_max_mv = mv;
+    }
+    sample->cell_delta_mv = (u16)(sample->cell_max_mv - sample->cell_min_mv);
+
+    /* Exercise both current signs while staying far below default OCP levels.
+     * AFE/common convention is +discharge, -charge.
+     */
+    switch ((s_sim_step / 50u) & 0x03u) {
+    case 0u: sample->current_ma = 0; break;
+    case 1u: sample->current_ma = 650; break;
+    case 2u: sample->current_ma = 0; break;
+    default: sample->current_ma = -450; break;
+    }
+    sample->current_raw = 0;
+    sample->current_ma_valid = 1u;
+
+    sample->temp_dC[0] = 250;  /* 25.0 C, battery TS1 */
+    sample->temp_dC[1] = 253;  /* 25.3 C, battery TS2 */
+    sample->temp_dC[2] = 0;    /* TS3 is not populated on HS-D011 */
+    sample->temp_dC[3] = 278;  /* 27.8 C, MOS TS4 */
+    sample->ts_ohm[0] = 10000u;
+    sample->ts_ohm[1] = 9900u;
+    sample->ts_ohm[2] = 0u;
+    sample->ts_ohm[3] = 9000u;
+
+    sample->vtop_mv = (u16)((sample->pack_mv > 0xFFFFu) ? 0xFFFFu : sample->pack_mv);
+    sample->vchgr_mv = (u16)(((sample->pack_mv + 500u) > 0xFFFFu) ?
+                              0xFFFFu : (sample->pack_mv + 500u));
+    sample->fault_bits = 0u;
+    sample->online = 1u;
+
+    ++s_sim_step;
+    return 0;
+}
+
+int bms_afe_set_mos(u8 charge_on, u8 discharge_on)
+{
+    (void)charge_on;
+    (void)discharge_on;
+    return 0;
+}
+
+int bms_afe_clear_faults(u32 fault_mask)
+{
+    (void)fault_mask;
+    return 0;
+}
+
+int bms_afe_get_param_limits(u16 param_id, s32 *min_value, s32 *max_value, s32 *step)
+{
+    (void)param_id;
+    (void)min_value;
+    (void)max_value;
+    (void)step;
+    return 0;
+}
+
+int bms_afe_apply_param(u16 param_id, s32 value)
+{
+    (void)param_id;
+    (void)value;
+    return BMS_AFE_APPLY_NOT_MAPPED;
+}
+
+#else /* real SH3673510 hardware */
+
 void bms_afe_get_info(bms_afe_info_t *info)
 {
     if (!info) return;
@@ -154,3 +265,5 @@ int bms_afe_apply_param(u16 param_id, s32 value)
         return BMS_AFE_APPLY_NOT_MAPPED;
     }
 }
+
+#endif /* BMS_AFE_SIMULATION_ENABLE */
